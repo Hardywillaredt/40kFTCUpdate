@@ -1,0 +1,39 @@
+<!-- Xml UI. See documentation: https://api.tabletopsimulator.com/ui/introUI/ -->
+<Defaults>
+  <Button width="550" height="300" fontSize="40" onClick="" fontStyle="Bold"/>
+  <Text fontSize="100" color="#000000" fontStyle="Bold"/>
+</Defaults>
+
+<Panel id="redirect" active="false" position="0 0 0" scale="0.6 0.6 0.6" offsetXY="0 0" color="White" >
+  <Text offsetXY="0 350" fontSize="80" color="Red">WARNING</Text>
+
+<Text id="coreRedirect" offsetXY="0 0" fontSize="36">
+    WAIT FOR LOADING
+</Text>
+
+  <Button id="closeRedirectBtn" active="true" offsetXY="0 -475"  color="#000000" textColor="#aaaaaa" width="500" height="80"  fontSize="30" onClick="closeRedir">CLOSE</Button>
+  <Text id="closeRedirectLbl" active="true" offsetXY="0 -475" textColor="White" fontSize="30">
+  </Text>
+</Panel>
+
+<Panel id="main" active="false" position="0 0 0" scale="0.5 0.5 0.5" offsetXY="0 0" color="#999999" visibility="Diamonds">
+  <Text offsetXY="0 400">CHOOSE YOUR SEAT</Text>
+  <Button id="redBtn" offsetXY="-300 100" color="#bb0000"  onClick="placeToRed">Red Player</Button>
+  <Button id="blueBtn" offsetXY="300 100" color="#0033bb" textColor="#aaaaaa" onClick="placeToBlue">Blue Player</Button>
+  <Text fontSize="45" color="#bb0000" offsetXY="0 -100" >USE OTHER PLAYER COLORS AT YOUR OWN RISK !</Text>
+  <Button id="greyBtn" offsetXY="0 -250"  color="#666666" width="1150" height="200"  onClick="placeToGray">Spectator</Button>
+  <Button id="closeBtn" offsetXY="0 -475"  color="#000000" textColor="#aaaaaa" width="500" height="80"  fontSize="30" onClick="closeMenu">CLOSE MENU</Button>
+</Panel>
+
+
+
+<Panel id="rollDice" active="true" position="-635 515 0" scale="0.5 0.5 0.5" offsetXY="0 0" color="#99999900" visibility="None|Hearts|Spades">
+<Text fontSize="25" color="Grey" offsetXY="0 -65" >( SELECT A MODEL FIRST )</Text>
+  <Button id="toDiceRoller" offsetXY="150 0" color="Black" textColor="Green" onClick="goToDiceRoller" width="270" height="90" fontSize="30"  fontStyle="Bold">TO DICE ROLLER</Button>
+  <Button id="toSquad" offsetXY="-150 0" color="Black" textColor="Red"  onClick="goToSquad"             width="270" height="90" fontSize="30"  fontStyle="Bold">BACK TO SQUAD</Button>
+</Panel>
+
+<Panel id="passTurn" active="true" position="525 495 0" scale="0.5 0.5 0.5" offsetXY="0 0" color="#99999900" visibility="Black">
+  <Button id="passTurnBtn" offsetXY="0 0" color="Red" textColor="White" onClick="nextPhase" width="200" height="180" fontSize="35"  fontStyle="Bold"></Button>
+  <Text id="passTurnTxt" offsetXY="0 0" color="White" textColor="White" onClick="nextPhase" width="180" height="180" fontSize="35"  fontStyle="Bold">NEXT PHASE</Text>
+</Panel>
