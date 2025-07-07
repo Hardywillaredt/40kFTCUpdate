@@ -59,8 +59,6 @@ secondary22CardZone_GUID = "88cac4"
 
 CPMissionBook_GUID = "731ec4"
 
-local spawnedDiceObjects = {}
-
 --[[
 GUID reference for primary / mission / deployment cards
 Yeah, I could use variables but I didn't, oh well
@@ -232,31 +230,18 @@ allowAutoSeat = true
 redPlayerID = ""
 bluePlayerID = ""
 
--- Grid layout for each player
-PLAYER_GRID_SPAWN = {
-    Red = {
-        origin = {x = 18.93, y = 1.28, z = 42.30},
-        right = {-1, 0}, -- negative X
-        down = {0, 1},   -- positive Z
-    },
-    Blue = {
-        origin = {x = -19.16, y = 1.28, z = -42.63},
-        right = {1, 0},  -- positive X
-        down = {0, -1},  -- negative Z
-    }
-}
 
 -- Grid layout for each player
 PLAYER_GRID_SPAWN = {
     Red = {
         origin = {x = 18.93, y = 1.28, z = 42.30},
-        right = {-1, 0}, -- negative X
-        down = {0, 1},   -- positive Z
+        xDir = -1, -- negative X
+        zDir = 1,   -- positive Z
     },
     Blue = {
         origin = {x = -19.16, y = 1.28, z = -42.63},
-        right = {1, 0},  -- positive X
-        down = {0, -1},  -- negative Z
+        xDir = 1,  -- positive X
+        zDir = -1,  -- negative Z
     }
 }
 
@@ -419,31 +404,27 @@ function groupWeaponsByModel(weaponsByModel, hitKey)
 end
 
 
-function clearSpawnedDiceObjects()
-    for _, obj in ipairs(spawnedDiceObjects) do
-        if obj and obj.getGUID then
-            destroyObject(obj)
-        end
-    end
-    spawnedDiceObjects = {}
-end
 
+-- Global storage for tracking dice groups and buttons
+spawnedDiceObjects = {}
+diceGroupButtons = {}
+diceGroupsByButtonGUID = {}
 
 function spawnWeaponDice(playerColor, grouped)
     clearSpawnedDiceObjects()
     local grid = PLAYER_GRID_SPAWN[playerColor]
     if not grid then
-        printToAll("No grid defined for color: " .. playerColor, {1,0,0})
+        printToAll("No grid defined for color: " .. playerColor, {1, 0, 0})
         return
     end
 
     local origin = grid.origin
-    local dx, dz = grid.right[1], grid.right[2]
-    local dyx, dyz = grid.down[1], grid.down[2]
+    local dx = grid.xDir
+    local dz = grid.zDir
 
     local rowSize = 5
-    local spacing = 1.6
-    local groupOffsetZ = 0
+    local spacing = 1.5
+    local groupOffsetX = 0
 
     local groupList = {}
     for _, group in pairs(grouped) do
@@ -458,18 +439,19 @@ function spawnWeaponDice(playerColor, grouped)
         local groupColor = group.color or stringColorToRGB(playerColor)
         local attacksPerModel = tonumber(group.label:match("A:(%d+)") or 0)
         local totalDice = group.count * attacksPerModel
-        local rows = math.ceil(totalDice / rowSize)
-        local groupOffsetX = 0
+        local cols = math.ceil(totalDice / rowSize)
+        local groupDice = {}
 
         printToColor(string.format("Spawning group: %s | Models: %d | Dice: %d", group.label, group.count, totalDice), playerColor, {0.6, 1, 0.6})
 
+        -- Spawn dice in rows
         for i = 0, totalDice - 1 do
             local row = math.floor(i / rowSize)
             local col = i % rowSize
             local pos = {
-                x = origin.x + col * spacing * dx + row * spacing * dyx + groupOffsetX,
+                x = origin.x + groupOffsetX + col * spacing * dx,
                 y = origin.y + 2,
-                z = origin.z + col * spacing * dz + row * spacing * dyz + groupOffsetZ,
+                z = origin.z + row * spacing * dz,
             }
             local die = spawnObject({
                 type = "Die_6_Rounded",
@@ -480,14 +462,14 @@ function spawnWeaponDice(playerColor, grouped)
                 end
             })
             table.insert(spawnedDiceObjects, die)
-            
+            table.insert(groupDice, die)
         end
 
-        -- Raise label above grid center
+        -- Spawn label
         local labelPos = {
-            x = origin.x + 2 * spacing * dx + groupOffsetX,
+            x = origin.x + groupOffsetX + 2 * spacing * dx,
             y = origin.y + 4.0,
-            z = origin.z + 2 * spacing * dz + groupOffsetZ,
+            z = origin.z + 2 * spacing * dz,
         }
 
         local diceText = spawnObject({
@@ -505,15 +487,64 @@ function spawnWeaponDice(playerColor, grouped)
                 obj.TextTool.setFontColor(groupColor)
             end
         })
-
         table.insert(spawnedDiceObjects, diceText)
 
-        local groupSpacing = (rows + 1.5) * spacing
-        groupOffsetZ = groupOffsetZ + groupSpacing * dyz
-        groupOffsetX = groupOffsetX + groupSpacing * dyx
+        -- Spawn button
+        local buttonPos = {
+            x = origin.x + groupOffsetX + 2 * spacing * dx,
+            y = origin.y + 1.2,
+            z = origin.z - 2 * spacing * dz
+        }
+
+        local btn = spawnObject({
+            type = "BlockSquare",
+            position = buttonPos,
+            scale = {2, 0.2, 1},
+            sound = false,
+            callback_function = function(obj)
+                obj.setColorTint({0.2, 0.2, 0.2})
+                obj.setLock(true)
+                obj.interactable = true
+                obj.createButton({
+                    label = "Load Roll",
+                    click_function = "onLoadRollClicked",
+                    function_owner = Global,
+                    position = {0, 0.2, 0},
+                    rotation = {0, 0, 0},
+                    width = 1600,
+                    height = 600,
+                    font_size = 300
+                })
+                diceGroupsByButtonGUID[obj.getGUID()] = groupDice
+            end
+        })
+
+        table.insert(spawnedDiceObjects, btn)
+        table.insert(diceGroupButtons, btn)
+
+        -- Add lateral spacing for next group
+        local groupSpacing = (math.min(totalDice, rowSize) + 2) * spacing
+        groupOffsetX = groupOffsetX + groupSpacing * dx
     end
 end
 
+
+function clearSpawnedDiceObjects()
+    for _, obj in ipairs(spawnedDiceObjects) do
+        if obj and obj.destruct then obj.destruct() end
+    end
+    spawnedDiceObjects = {}
+    diceGroupsByButtonGUID = {}
+    diceGroupButtons = {}
+end
+
+function onLoadRollClicked(obj, playerColor)
+    local groupDice = diceGroupsByButtonGUID[obj.getGUID()]
+    if groupDice then
+        broadcastToColor("Loading roll for group of " .. #groupDice .. " dice", playerColor, {0.8, 0.8, 1})
+        -- Add logic here to associate or re-roll the dice
+    end
+end
 
 
 
