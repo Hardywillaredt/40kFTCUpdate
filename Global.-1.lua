@@ -687,33 +687,96 @@ function getMinimumDistanceBetweenBoundingBoxes(obj1, obj2)
     return minDist
 end
 
-function spawnHeightMarkerFor(obj)
-    local pos = obj.getPosition()
-    pos.y = pos.y + 2.5  -- spawn well above base
+function spawnFloatingHeightMarker(playerColor)
+    local player = Player[playerColor]
+    local pos = player.getPointerPosition()  -- where mouse points
 
-    local peg = spawnObject({
+    pos.y = pos.y + 2.5  -- float above surface
+
+    local marker = spawnObject({
         type = "BlockSquare",
         position = pos,
         scale = {1, 0.1, 1},
         sound = false,
-        callback_function = function(marker)
-            marker.setColorTint({0, 1, 1})
-            marker.setLock(false)  -- allow dragging
-            marker.setName("Height Marker")
-            marker.setDescription("Drag to top of model, press K to record height.")
-            marker.addTag("heightMarker")
-            marker.addTag("uuid:" .. getUUIDFromTags(obj))
+        callback_function = function(obj)
+            obj.setName("Height Marker")
+            obj.setDescription("Use buttons 8/9 to raise/lower. Press 0 to confirm height.")
+            obj.setColorTint({0, 1, 1})
+            obj.addTag("heightMarker")
+            obj.setLock(true)
+            obj.use_gravity = false
+            obj.interactable = true
 
-            -- Disable physics effects
-            marker.use_gravity = false
-            marker.setLock(true)  -- this disables physics bounce
-            marker.interactable = true
+            obj.setVar("raiseDelta", 0.2)
         end
     })
-
-
-
 end
+
+currentHeightMarker = {
+    pos = nil,
+    height = nil
+}
+
+function drawHeightMarker(pos, height)
+    local size = 2
+    local half = size / 2
+    local lines = {}
+    local y0 = pos.y
+    local y1 = y0+ height
+
+    -- Define bottom corners
+    local corners = {
+        {pos.x - half, y0, pos.z - half},  -- 1
+        {pos.x + half, y0, pos.z - half},  -- 2
+        {pos.x + half, y0, pos.z + half},  -- 3
+        {pos.x - half, y0, pos.z + half},  -- 4
+    }
+
+    -- Define top corners
+    local topCorners = {}
+    for _, p in ipairs(corners) do
+        table.insert(topCorners, {p[1], y1, p[3]})
+    end
+
+    -- Bottom loop
+    table.insert(lines, {
+        color = {0, 1, 1},
+        thickness = 0.1,
+        points = {corners[1], corners[2], corners[3], corners[4], corners[1]}
+    })
+
+    -- Top loop
+    table.insert(lines, {
+        color = {0, 1, 1},
+        thickness = 0.1,
+        points = {topCorners[1], topCorners[2], topCorners[3], topCorners[4], topCorners[1]}
+    })
+
+    -- Diagonal twist lines (bottom[i] to top[i+1])
+    for i = 1, 4 do
+        local j = (i % 4) + 1
+        table.insert(lines, {
+            color = {0, 1, 1},
+            thickness = 0.1,
+            points = {corners[i], topCorners[j]}
+        })
+    end
+
+    for i = 1, 4 do
+        local j = (i % 4) + 1
+        table.insert(lines, {
+            color = {0, 1, 1},
+            thickness = 0.1,
+            points = {corners[j], topCorners[i]}
+        })
+    end
+
+    Global.setVectorLines(lines)
+end
+
+
+
+
 
 
 function bakeLOSCorners(obj, height)
@@ -721,7 +784,7 @@ function bakeLOSCorners(obj, height)
     local pos = obj.getPosition()
     local sx = bounds.size.x / 2
     local sz = bounds.size.z / 2
-    local bottomY = bounds.center.y - bounds.size.y / 2
+    local bottomY = bounds.center.y - bounds.size.y / 2 + 0.1
 
     -- Define 4 bottom corners
     local bottoms = {
@@ -870,7 +933,33 @@ end
 
 
 
+heldButtons = {}
 
+function startHeightAdjustLoop(playerColor, index)
+    local delta = (index == 8) and 0.05 or -0.05  -- U raises, I lowers
+
+    Wait.time(function()
+        -- Stop if button no longer held
+        if not (heldButtons[playerColor] and heldButtons[playerColor][index]) then
+            return
+        end
+
+        -- Initialize if needed
+        if not currentHeightMarker.pos then
+            local pos = Player[playerColor].getPointerPosition()
+            currentHeightMarker.pos = {x = pos.x, y = pos.y, z = pos.z}
+            currentHeightMarker.height = pos.y + 2.5
+        else
+            currentHeightMarker.height = currentHeightMarker.height + delta
+        end
+
+        drawHeightMarker(currentHeightMarker.pos, currentHeightMarker.height)
+        
+
+        -- Repeat the loop while held
+        startHeightAdjustLoop(playerColor, index)
+    end, 0.01)  -- repeat every 0.2s
+end
 
 -- Override scripting button down (B = 1, C = 2, K = 3)
 function onScriptingButtonDown(index, playerColor)
@@ -991,62 +1080,47 @@ function onScriptingButtonDown(index, playerColor)
         broadcastToColor("Cleared target/source selection.", playerColor, {0.8,0.8,0.8})
     
 
-    elseif index == 4 then  -- 'L' key to spawn a height marker
-        local hoverObj = Player[playerColor].getHoverObject()
-        if not hoverObj then
-            broadcastToColor("No object under pointer.", playerColor, {1, 0.5, 0.5})
+
+    -- O key – Apply current marker height to selected models
+    elseif index == 7 then
+        if not currentHeightMarker.pos or not currentHeightMarker.height then
+            broadcastToColor("No height marker set.", playerColor, {1, 0.5, 0.5})
             return
         end
 
-        local uuid = getUUIDFromTags(hoverObj)
-        if not uuid then
-            broadcastToColor("Hovered object has no UUID tag.", playerColor, {1, 0.5, 0.5})
+        local selected = Player[playerColor].getSelectedObjects()
+        if #selected == 0 then
+            broadcastToColor("No models selected to apply height to.", playerColor, {1, 0.5, 0.5})
             return
         end
 
-        spawnHeightMarkerFor(hoverObj)
-        broadcastToColor("Spawned height marker for model.", playerColor, {0.5, 1, 1})
-
-    elseif index == 5 then
-        -- Save heights from all markers
-        local markers = getObjectsWithTag("heightMarker")
-        for _, marker in ipairs(markers) do
-            local uuid = getUUIDFromTags(marker)
-            if uuid then
-                local group = getObjectsWithTag("uuid:" .. uuid)
-                if #group > 0 then
-                    local model = group[1]
-                    local baseY = model.getBounds().center.y
-                    local markerY = marker.getPosition().y
-                    local height = math.max(0, markerY - baseY)
-                    bakeLOSCorners(model, height)
-
-                    marker.destroy()
-                    broadcastToColor("Saved height [" .. string.format("%.2f", height) .. "] for model " .. model.getName(), playerColor, {0.8, 1, 0.8})
-                end
-            end
-        end
-    elseif index == 8 or index == 9 then  -- U/I to raise/lower marker
-        local delta = (index == 8) and 0.1 or -0.1  -- U = raise, I = lower
-        local selected = getObjectsWithTag("heightMarker")
-    
-        local adjusted = false
+        local updated = 0
         for _, obj in ipairs(selected) do
-            local pos = obj.getPosition()
-            pos.y = pos.y + delta
-            obj.setPosition(pos)
-            adjusted = true
+            bakeLOSCorners(obj, currentHeightMarker.height)
+            updated = updated + 1
         end
-    
-        if adjusted then
-            broadcastToColor("Adjusted height marker " .. ((delta > 0) and "up" or "down") .. " by " .. math.abs(delta), playerColor, {0.5, 1, 1})
-        else
-            broadcastToColor("No height marker selected.", playerColor, {1, 0.5, 0.5})
-        end
-    
 
+        Global.setVectorLines({})
+        currentHeightMarker = {pos = nil, height = nil}
+        broadcastToColor("Applied height to " .. updated .. " selected model(s).", playerColor, {0, 1, 0})
+
+    elseif index == 8 or index == 9 then  -- U/I keys
+        heldButtons[playerColor] = heldButtons[playerColor] or {}
+        heldButtons[playerColor][index] = true
+
+        -- Start hold loop
+        startHeightAdjustLoop(playerColor, index)
     end
 
+end
+
+
+function onScriptingButtonUp(index, playerColor)
+    if heldButtons[playerColor] then
+        heldButtons[playerColor][index] = false
+    else
+        heldButtons[playerColor] = {}  -- Ensure it's at least a table
+    end
 end
 
 
