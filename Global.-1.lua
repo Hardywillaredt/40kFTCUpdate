@@ -439,37 +439,16 @@ function spawnWeaponDice(playerColor, grouped)
         local groupColor = group.color or stringColorToRGB(playerColor)
         local attacksPerModel = tonumber(group.label:match("A:(%d+)") or 0)
         local totalDice = group.count * attacksPerModel
-        local cols = math.ceil(totalDice / rowSize)
+        local numRows = math.ceil(totalDice / rowSize)
         local groupDice = {}
 
         printToColor(string.format("Spawning group: %s | Models: %d | Dice: %d", group.label, group.count, totalDice), playerColor, {0.6, 1, 0.6})
 
-        -- Spawn dice in rows
-        for i = 0, totalDice - 1 do
-            local row = math.floor(i / rowSize)
-            local col = i % rowSize
-            local pos = {
-                x = origin.x + groupOffsetX + col * spacing * dx,
-                y = origin.y + 2,
-                z = origin.z + row * spacing * dz,
-            }
-            local die = spawnObject({
-                type = "Die_6_Rounded",
-                position = pos,
-                rotation = {0, math.random() * 360, 0},
-                callback_function = function(obj)
-                    obj.setColorTint(groupColor)
-                end
-            })
-            table.insert(spawnedDiceObjects, die)
-            table.insert(groupDice, die)
-        end
-
-        -- Spawn label
+        -- Weapon label = row 0
         local labelPos = {
             x = origin.x + groupOffsetX + 2 * spacing * dx,
-            y = origin.y + 4.0,
-            z = origin.z + 2 * spacing * dz,
+            y = origin.y + 2.5,
+            z = origin.z + 0 * spacing * dz,
         }
 
         local diceText = spawnObject({
@@ -489,35 +468,64 @@ function spawnWeaponDice(playerColor, grouped)
         })
         table.insert(spawnedDiceObjects, diceText)
 
-        -- Spawn button
+        -- Dice start at row 1
+        for i = 0, totalDice - 1 do
+            local row = math.floor(i / rowSize) + 1
+            local col = i % rowSize
+            local pos = {
+                x = origin.x + groupOffsetX + col * spacing * dx,
+                y = origin.y + 2,
+                z = origin.z + row * spacing * dz,
+            }
+            local die = spawnObject({
+                type = "Die_6_Rounded",
+                position = pos,
+                rotation = {0, math.random() * 360, 0},
+                callback_function = function(obj)
+                    obj.setColorTint(groupColor)
+                end
+            })
+            table.insert(spawnedDiceObjects, die)
+            table.insert(groupDice, die)
+        end
+
+
+        local rowForButton = math.max(numRows + 1, 6)
+        -- Raise the object off the table a bit more
         local buttonPos = {
             x = origin.x + groupOffsetX + 2 * spacing * dx,
-            y = origin.y + 1.2,
-            z = origin.z - 2 * spacing * dz
+            y = origin.y - 0.3,  -- <-- higher off table
+            z = origin.z + (rowForButton) * spacing * dz,
         }
 
         local btn = spawnObject({
             type = "BlockSquare",
             position = buttonPos,
-            scale = {2, 0.2, 1},
+            scale = {1.8, 0.1, 1},
             sound = false,
             callback_function = function(obj)
                 obj.setColorTint({0.2, 0.2, 0.2})
                 obj.setLock(true)
                 obj.interactable = true
+                obj.use_gravity = false
+
                 obj.createButton({
                     label = "Load Roll",
                     click_function = "onLoadRollClicked",
                     function_owner = Global,
-                    position = {0, 0.2, 0},
+                    position = {0, 0.5, 0},  -- <-- lift button text above the base
                     rotation = {0, 0, 0},
                     width = 1600,
                     height = 600,
-                    font_size = 300
+                    font_size = 200,
+                    color = {0.1, 0.1, 0.1},
+                    font_color = {1, 1, 1}
                 })
+
                 diceGroupsByButtonGUID[obj.getGUID()] = groupDice
             end
         })
+
 
         table.insert(spawnedDiceObjects, btn)
         table.insert(diceGroupButtons, btn)
@@ -527,6 +535,8 @@ function spawnWeaponDice(playerColor, grouped)
         groupOffsetX = groupOffsetX + groupSpacing * dx
     end
 end
+
+
 
 
 function clearSpawnedDiceObjects()
@@ -539,12 +549,33 @@ function clearSpawnedDiceObjects()
 end
 
 function onLoadRollClicked(obj, playerColor)
-    local groupDice = diceGroupsByButtonGUID[obj.getGUID()]
-    if groupDice then
-        broadcastToColor("Loading roll for group of " .. #groupDice .. " dice", playerColor, {0.8, 0.8, 1})
-        -- Add logic here to associate or re-roll the dice
+    local matGUID = nil
+
+    if playerColor == "Red" then
+        matGUID = redDiceMat_GUID
+    elseif playerColor == "Blue" then
+        matGUID = blueDiceMat_GUID
+    else
+        printToColor("No dice mat assigned for player color: " .. playerColor, playerColor, {1, 0.5, 0.5})
+        return
     end
+
+    local mat = getObjectFromGUID(matGUID)
+    if not mat then
+        printToColor("Dice mat object not found for color: " .. playerColor, playerColor, {1, 0.5, 0.5})
+        return
+    end
+
+    local dice = diceGroupsByButtonGUID[obj.getGUID()]
+    log(dice)
+    if not dice then
+        printToColor("No dice group linked to this button.", playerColor, {1, 0.5, 0.5})
+        return
+    end
+
+    mat.call("moveDiceToRollerWrapper", {playerColor = playerColor, dice = dice})
 end
+
 
 
 

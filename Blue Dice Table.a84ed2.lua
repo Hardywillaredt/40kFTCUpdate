@@ -317,6 +317,10 @@ function SelectDeleteDiceX(action, n, selectOthers, lowUp, color)
     end
 end
 
+function moveDiceToRollerWrapper(args)
+    moveDiceToRoller(args.playerColor, args.dice)
+end
+
 function moveDiceToRoller(color, dice)
     roller.call("setPlayerColor", {color=color})
 
