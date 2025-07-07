@@ -59,6 +59,8 @@ secondary22CardZone_GUID = "88cac4"
 
 CPMissionBook_GUID = "731ec4"
 
+local spawnedDiceObjects = {}
+
 --[[
 GUID reference for primary / mission / deployment cards
 Yeah, I could use variables but I didn't, oh well
@@ -278,6 +280,12 @@ function onChat(message, player)
         local grouped = groupWeapons(weapons, "ws")
         spawnWeaponDice(color, grouped)
     end
+    if message:lower() == "!drawlos" then
+        drawAllLOSCornerBoxes()
+        printToColor("LOS debug boxes drawn.", player.color, {1, 0.8, 0})
+        return false -- suppress message from chat log if desired
+    end
+
 end
 
 local function extractStatBlock(stats)
@@ -331,17 +339,19 @@ function parseWeaponsByModel(objects, requestedType)
             if clean ~= "" then table.insert(lines, clean) end
         end
 
-        for i = #lines, 1, -1 do
+        local i = 1
+        while i <= #lines do
             local line = lines[i]
             local isRanged = line:match("^%d+%s*\"%s*A:%d+")
             local isMelee = not isRanged and line:match("^A:%d+")
 
             if (isRanged and requestedType == "Ranged") or (isMelee and requestedType == "Melee") then
+                -- Look upward for the weapon name
                 local name = "Unknown"
                 for j = i - 1, 1, -1 do
-                    local maybeName = lines[j]
-                    if not maybeName:match("^%d+%s*\"%s*A:%d+") and not maybeName:match("^A:%d+") then
-                        name = maybeName
+                    local prior = lines[j]
+                    if not prior:match("^%d+%s*\"%s*A:%d+") and not prior:match("^A:%d+") then
+                        name = prior
                         break
                     end
                 end
@@ -370,11 +380,14 @@ function parseWeaponsByModel(objects, requestedType)
                     abilities = table.concat(abilities, ", ")
                 })
             end
+
+            i = i + 1
         end
     end
 
     return result
 end
+
 
 
 
@@ -406,7 +419,18 @@ function groupWeaponsByModel(weaponsByModel, hitKey)
 end
 
 
+function clearSpawnedDiceObjects()
+    for _, obj in ipairs(spawnedDiceObjects) do
+        if obj and obj.getGUID then
+            destroyObject(obj)
+        end
+    end
+    spawnedDiceObjects = {}
+end
+
+
 function spawnWeaponDice(playerColor, grouped)
+    clearSpawnedDiceObjects()
     local grid = PLAYER_GRID_SPAWN[playerColor]
     if not grid then
         printToAll("No grid defined for color: " .. playerColor, {1,0,0})
@@ -447,7 +471,7 @@ function spawnWeaponDice(playerColor, grouped)
                 y = origin.y + 2,
                 z = origin.z + col * spacing * dz + row * spacing * dyz + groupOffsetZ,
             }
-            spawnObject({
+            local die = spawnObject({
                 type = "Die_6_Rounded",
                 position = pos,
                 rotation = {0, math.random() * 360, 0},
@@ -455,6 +479,8 @@ function spawnWeaponDice(playerColor, grouped)
                     obj.setColorTint(groupColor)
                 end
             })
+            table.insert(spawnedDiceObjects, die)
+            
         end
 
         -- Raise label above grid center
@@ -464,7 +490,7 @@ function spawnWeaponDice(playerColor, grouped)
             z = origin.z + 2 * spacing * dz + groupOffsetZ,
         }
 
-        spawnObject({
+        local diceText = spawnObject({
             type = "3DText",
             position = labelPos,
             rotation = {
@@ -479,6 +505,8 @@ function spawnWeaponDice(playerColor, grouped)
                 obj.TextTool.setFontColor(groupColor)
             end
         })
+
+        table.insert(spawnedDiceObjects, diceText)
 
         local groupSpacing = (rows + 1.5) * spacing
         groupOffsetZ = groupOffsetZ + groupSpacing * dyz
@@ -536,17 +564,312 @@ function extractRangeInches(rangeStr)
 end
 
 -- Generate deterministic color from string
-function colorFromLabel(label)
-    local r = 0.5 + 0.5 * math.abs(math.sin(#label * 13))
-    local g = 0.5 + 0.5 * math.abs(math.sin(#label * 23))
-    local b = 0.5 + 0.5 * math.abs(math.sin(#label * 37))
-    return {r, g, b}
+function colorFromLabel(label, playerColor)
+    local playerColorMap = {
+        White = {1, 1, 1},
+        Brown = {0.4, 0.2, 0},
+        Red = {1, 0, 0},
+        Orange = {1, 0.5, 0},
+        Yellow = {1, 1, 0},
+        Green = {0, 1, 0},
+        Teal = {0, 1, 1},
+        Blue = {0, 0, 1},
+        Purple = {0.5, 0, 1},
+        Pink = {1, 0.4, 0.7},
+        Grey = {0.5, 0.5, 0.5},
+        Black = {0, 0, 0},
+    }
+
+    local baseColor = playerColorMap[playerColor] or {1, 1, 1}
+
+    -- Create a pseudo-random color from label hash
+    local seed = 0
+    for i = 1, #label do
+        seed = seed + label:byte(i) * i
+    end
+
+    -- Generate a unique but repeatable color from the label
+    local r = (math.sin(seed * 0.1 + 1) * 0.5 + 0.5)
+    local g = (math.sin(seed * 0.13 + 2) * 0.5 + 0.5)
+    local b = (math.sin(seed * 0.07 + 3) * 0.5 + 0.5)
+
+    local labelColor = {r, g, b}
+
+    -- Blend player color and label color (bias towards player color)
+    local bias = 0.4  -- 0.0 = only label color, 1.0 = only player color
+
+    local blended = {
+        baseColor[1] * bias + labelColor[1] * (1 - bias),
+        baseColor[2] * bias + labelColor[2] * (1 - bias),
+        baseColor[3] * bias + labelColor[3] * (1 - bias)
+    }
+
+    return blended
 end
+
 
 -- Clear previous draw lines
 function clearDraw()
     Global.setVectorLines({})
 end
+
+
+function getBoundingBoxCorners(obj)
+    if not obj or not obj.getBounds then
+        log("[getBoundingBoxCorners] Invalid object passed.")
+        return {}
+    end
+    local bounds = obj.getBounds()
+    local cx, cy, cz = bounds.center.x, bounds.center.y, bounds.center.z
+    local sx, sy, sz = bounds.size.x / 2, bounds.size.y / 2, bounds.size.z / 2
+
+    local corners = {
+        {x = cx - sx, y = cy - sy, z = cz - sz},
+        {x = cx + sx, y = cy - sy, z = cz - sz},
+        {x = cx + sx, y = cy - sy, z = cz + sz},
+        {x = cx - sx, y = cy - sy, z = cz + sz},
+        {x = cx - sx, y = cy + sy, z = cz - sz},
+        {x = cx + sx, y = cy + sy, z = cz - sz},
+        {x = cx + sx, y = cy + sy, z = cz + sz},
+        {x = cx - sx, y = cy + sy, z = cz + sz}
+    }
+
+    return corners
+end
+debugVectorLines = {}
+function drawBoundingBox(obj, color)
+    local c = color or {1, 1, 0}
+    local corners = getBoundingBoxCorners(obj)
+    local lines = {
+        -- bottom square
+        {1,2}, {2,3}, {3,4}, {4,1},
+        -- top square
+        {5,6}, {6,7}, {7,8}, {8,5},
+        -- verticals
+        {1,5}, {2,6}, {3,7}, {4,8}
+    }
+
+    for _, pair in ipairs(lines) do
+        local p1 = corners[pair[1]]
+        local p2 = corners[pair[2]]
+        table.insert(debugVectorLines, {
+            color = c,
+            points = {
+                {p1.x, p1.y, p1.z},
+                {p2.x, p2.y, p2.z}
+            },
+            thickness = 0.03
+        })
+    end
+
+    Global.setVectorLines(debugVectorLines)
+end
+
+
+
+function getMinimumDistanceBetweenBoundingBoxes(obj1, obj2)
+    local corners1 = getBoundingBoxCorners(obj1)
+    local corners2 = getBoundingBoxCorners(obj2)
+
+    local minDist = math.huge
+    for _, c1 in ipairs(corners1) do
+        for _, c2 in ipairs(corners2) do
+            local dx = c1.x - c2.x
+            local dy = c1.y - c2.y
+            local dz = c1.z - c2.z
+            local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if dist < minDist then
+                minDist = dist
+            end
+        end
+    end
+
+    return minDist
+end
+
+function spawnHeightMarkerFor(obj)
+    local pos = obj.getPosition()
+    pos.y = pos.y + 2.5  -- spawn well above base
+
+    local peg = spawnObject({
+        type = "BlockSquare",
+        position = pos,
+        scale = {1, 0.1, 1},
+        sound = false,
+        callback_function = function(marker)
+            marker.setColorTint({0, 1, 1})
+            marker.setLock(false)  -- allow dragging
+            marker.setName("Height Marker")
+            marker.setDescription("Drag to top of model, press K to record height.")
+            marker.addTag("heightMarker")
+            marker.addTag("uuid:" .. getUUIDFromTags(obj))
+
+            -- Disable physics effects
+            marker.use_gravity = false
+            marker.setLock(true)  -- this disables physics bounce
+            marker.interactable = true
+        end
+    })
+
+
+
+end
+
+
+function bakeLOSCorners(obj, height)
+    local bounds = obj.getBounds()
+    local pos = obj.getPosition()
+    local sx = bounds.size.x / 2
+    local sz = bounds.size.z / 2
+    local bottomY = bounds.center.y - bounds.size.y / 2
+
+    -- Define 4 bottom corners
+    local bottoms = {
+        {x = -sx, y = bottomY - pos.y, z = -sz},
+        {x =  sx, y = bottomY - pos.y, z = -sz},
+        {x =  sx, y = bottomY - pos.y, z =  sz},
+        {x = -sx, y = bottomY - pos.y, z =  sz}
+    }
+
+    -- 4 top corners above the base
+    local corners = {}
+    for _, pt in ipairs(bottoms) do table.insert(corners, pt) end
+    for _, pt in ipairs(bottoms) do
+        table.insert(corners, {x = pt.x, y = pt.y + height, z = pt.z})
+    end
+
+    -- Store in GM Notes
+    local notes = obj.getGMNotes()
+    local data = {}
+    local ok, decoded = pcall(JSON.decode, notes)
+    if ok and type(decoded) == "table" then data = decoded end
+
+    data.los_corners = corners
+    obj.setGMNotes(JSON.encode_pretty(data))
+    obj.addTag("losBaked")
+end
+
+
+function getBakedLOSCorners(obj)
+    local notes = obj.getGMNotes()
+    local ok, decoded = pcall(JSON.decode, notes or "")
+    if ok and decoded and decoded.los_corners then
+        return decoded.los_corners
+    end
+    return nil
+end
+
+
+function drawLOSCornerBox(corners, obj, color)
+    local c = color or {1, 0.8, 0}
+    local objPos = obj.getPosition()
+    local lines = {
+        {1,2}, {2,3}, {3,4}, {4,1},
+        {5,6}, {6,7}, {7,8}, {8,5},
+        {1,5}, {2,6}, {3,7}, {4,8}
+    }
+
+    local vectorLines = {}
+    for _, pair in ipairs(lines) do
+        local p1 = corners[pair[1]]
+        local p2 = corners[pair[2]]
+
+        local wp1 = {p1.x + objPos.x, p1.y + objPos.y, p1.z + objPos.z}
+        local wp2 = {p2.x + objPos.x, p2.y + objPos.y, p2.z + objPos.z}
+
+        table.insert(vectorLines, {
+            color = c,
+            thickness = 0.05,
+            points = {wp1, wp2}
+        })
+    end
+
+    return vectorLines
+end
+
+
+function drawAllLOSCornerBoxes()
+    local allLines = {}
+
+    for _, obj in ipairs(getAllObjects()) do
+        if obj.hasTag("losBaked") then
+            local corners = getBakedLOSCorners(obj)
+            if corners and #corners == 8 then
+                local lines = drawLOSCornerBox(corners, obj, {1, 0.8, 0})
+                for _, line in ipairs(lines) do
+                    table.insert(allLines, line)
+                end
+            end
+        end
+    end
+
+    Global.setVectorLines(allLines)
+    print("LOS debug boxes drawn.")
+end
+
+function getModelDistance(source, target)
+    local function getWorldCorners(obj)
+        local objPos = obj.getPosition()
+        local corners = nil
+
+        -- Prefer baked LOS corners
+        if obj.hasTag("losBaked") then
+            local notes = obj.getGMNotes()
+            local ok, decoded = pcall(JSON.decode, notes or "")
+            if ok and decoded and decoded.los_corners and #decoded.los_corners == 8 then
+                corners = {}
+                for _, rel in ipairs(decoded.los_corners) do
+                    table.insert(corners, {
+                        x = objPos.x + rel.x,
+                        y = objPos.y + rel.y,
+                        z = objPos.z + rel.z
+                    })
+                end
+            end
+        end
+
+        -- Fallback: bounding box
+        if not corners then
+            local bounds = obj.getBounds()
+            local cx, cy, cz = bounds.center.x, bounds.center.y, bounds.center.z
+            local sx, sy, sz = bounds.size.x / 2, bounds.size.y / 2, bounds.size.z / 2
+
+            corners = {
+                {x = cx - sx, y = cy - sy, z = cz - sz},
+                {x = cx + sx, y = cy - sy, z = cz - sz},
+                {x = cx + sx, y = cy - sy, z = cz + sz},
+                {x = cx - sx, y = cy - sy, z = cz + sz},
+                {x = cx - sx, y = cy + sy, z = cz - sz},
+                {x = cx + sx, y = cy + sy, z = cz - sz},
+                {x = cx + sx, y = cy + sy, z = cz + sz},
+                {x = cx - sx, y = cy + sy, z = cz + sz}
+            }
+        end
+
+        return corners
+    end
+
+    local c1 = getWorldCorners(source)
+    local c2 = getWorldCorners(target)
+
+    local minDist = math.huge
+    for _, p1 in ipairs(c1) do
+        for _, p2 in ipairs(c2) do
+            local dx = p1.x - p2.x
+            local dy = p1.y - p2.y
+            local dz = p1.z - p2.z
+            local d = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if d < minDist then
+                minDist = d
+            end
+        end
+    end
+
+    return minDist
+end
+
+
+
 
 
 -- Override scripting button down (B = 1, C = 2, K = 3)
@@ -563,18 +886,25 @@ function onScriptingButtonDown(index, playerColor)
         local uuid = getUUIDFromTags(hoverObj)
         if not uuid then
             broadcastToColor("Hovered model has no UUID tag.", playerColor, {1,0.5,0.5})
+            drawBoundingBox(hoverObj, {0, 1, 0})
             return
         end
 
         if not targetingState.sourceGUID then
             targetingState.sourceGUID = uuid
             targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
-            for _, obj in ipairs(targetingState.sourceUnit) do obj.highlightOn({0,1,0}) end
+            for _, obj in ipairs(targetingState.sourceUnit) do 
+                obj.highlightOn({0,1,0}) 
+                drawBoundingBox(obj, {0, 1, 0})
+            end
             broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
         else
             targetingState.targetGUID = uuid
             targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
-            for _, obj in ipairs(targetingState.targetUnit) do obj.highlightOn({1,0,0}) end
+            for _, obj in ipairs(targetingState.targetUnit) do 
+                obj.highlightOn({1,0,0}) 
+                drawBoundingBox(obj, {1, 0, 0})
+            end
             broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
         end
 
@@ -607,8 +937,8 @@ function onScriptingButtonDown(index, playerColor)
                 local closestDist = math.huge
 
                 for _, target in ipairs(targetingState.targetUnit) do
-                    local dist = (sourcePos - target.getPosition()):magnitude()
-                    if dist < closestDist and dist <= rangeInches * 0.75 then
+                    local dist = getModelDistance(source, target)
+                    if dist < closestDist and dist <= rangeInches then
                         closestTarget = target
                         closestDist = dist
                     end
@@ -617,7 +947,7 @@ function onScriptingButtonDown(index, playerColor)
                 if closestTarget then
                     groupedByLabel[label] = groupedByLabel[label] or {
                         label = label,
-                        color = colorFromLabel(label),
+                        color = colorFromLabel(label, playerColor),
                         count = 0,
                         instances = {}
                     }
@@ -659,7 +989,64 @@ function onScriptingButtonDown(index, playerColor)
             drawHandles = {}, colorMap = {}
         }
         broadcastToColor("Cleared target/source selection.", playerColor, {0.8,0.8,0.8})
+    
+
+    elseif index == 4 then  -- 'L' key to spawn a height marker
+        local hoverObj = Player[playerColor].getHoverObject()
+        if not hoverObj then
+            broadcastToColor("No object under pointer.", playerColor, {1, 0.5, 0.5})
+            return
+        end
+
+        local uuid = getUUIDFromTags(hoverObj)
+        if not uuid then
+            broadcastToColor("Hovered object has no UUID tag.", playerColor, {1, 0.5, 0.5})
+            return
+        end
+
+        spawnHeightMarkerFor(hoverObj)
+        broadcastToColor("Spawned height marker for model.", playerColor, {0.5, 1, 1})
+
+    elseif index == 5 then
+        -- Save heights from all markers
+        local markers = getObjectsWithTag("heightMarker")
+        for _, marker in ipairs(markers) do
+            local uuid = getUUIDFromTags(marker)
+            if uuid then
+                local group = getObjectsWithTag("uuid:" .. uuid)
+                if #group > 0 then
+                    local model = group[1]
+                    local baseY = model.getBounds().center.y
+                    local markerY = marker.getPosition().y
+                    local height = math.max(0, markerY - baseY)
+                    bakeLOSCorners(model, height)
+
+                    marker.destroy()
+                    broadcastToColor("Saved height [" .. string.format("%.2f", height) .. "] for model " .. model.getName(), playerColor, {0.8, 1, 0.8})
+                end
+            end
+        end
+    elseif index == 8 or index == 9 then  -- U/I to raise/lower marker
+        local delta = (index == 8) and 0.1 or -0.1  -- U = raise, I = lower
+        local selected = getObjectsWithTag("heightMarker")
+    
+        local adjusted = false
+        for _, obj in ipairs(selected) do
+            local pos = obj.getPosition()
+            pos.y = pos.y + delta
+            obj.setPosition(pos)
+            adjusted = true
+        end
+    
+        if adjusted then
+            broadcastToColor("Adjusted height marker " .. ((delta > 0) and "up" or "down") .. " by " .. math.abs(delta), playerColor, {0.5, 1, 1})
+        else
+            broadcastToColor("No height marker selected.", playerColor, {1, 0.5, 0.5})
+        end
+    
+
     end
+
 end
 
 
