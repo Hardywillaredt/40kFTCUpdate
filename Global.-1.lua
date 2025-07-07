@@ -230,6 +230,21 @@ allowAutoSeat = true
 redPlayerID = ""
 bluePlayerID = ""
 
+-- Grid layout for each player
+PLAYER_GRID_SPAWN = {
+    Red = {
+        origin = {x = 18.93, y = 1.28, z = 42.30},
+        right = {-1, 0}, -- negative X
+        down = {0, 1},   -- positive Z
+    },
+    Blue = {
+        origin = {x = -19.16, y = 1.28, z = -42.63},
+        right = {1, 0},  -- positive X
+        down = {0, -1},  -- negative Z
+    }
+}
+
+-- Grid layout for each player
 PLAYER_GRID_SPAWN = {
     Red = {
         origin = {x = 18.93, y = 1.28, z = 42.30},
@@ -245,88 +260,151 @@ PLAYER_GRID_SPAWN = {
 
 function onChat(message, player)
     local color = player.color
+    
     if message == "!shoot" then
         local descs = getSelectedDescriptions(color)
-        local weapons = parseWeapons(descs, "Ranged")
+        local fullText = table.concat(descs, "\n---\n")
+        printToColor("Full concatenated description block:\n" .. fullText, color, {1, 1, 0.6})
+        log("[" .. player.steam_name .. "]: " .. fullText)
+        local weapons = parseWeaponsByModel(descs, "Ranged")
         local grouped = groupWeapons(weapons, "bs")
         spawnWeaponDice(color, grouped)
     elseif message == "!attack" then
         local descs = getSelectedDescriptions(color)
-        local weapons = parseWeapons(descs, "Melee")
+        local fullText = table.concat(descs, "\n---\n")
+        printToColor("Full concatenated description block:\n" .. fullText, color, {1, 1, 0.6})
+        log("[" .. player.steam_name .. "]: " .. fullText)
+        local weapons = parseWeaponsByModel(descs, "Melee")
         local grouped = groupWeapons(weapons, "ws")
         spawnWeaponDice(color, grouped)
     end
 end
 
+local function extractStatBlock(stats)
+    local out = {
+        a = 0,
+        hit = nil,
+        s = 0,
+        ap = 0,
+        d = 1,
+    }
+
+    for token in stats:gmatch("[^%s]+") do
+        local key, value = token:match("([A-Z]+):([%-%+%d]+)")
+        if key and value then
+            if key == "A" then
+                out.a = tonumber(value)
+            elseif key == "BS" or key == "WS" then
+                out.hit = value
+            elseif key == "S" then
+                out.s = tonumber(value)
+            elseif key == "AP" then
+                out.ap = tonumber(value)
+            elseif key == "D" then
+                out.d = tonumber(value)
+            end
+        end
+    end
+
+    return out
+end
+
+
 function getSelectedDescriptions(color)
     local out = {}
     for _, obj in ipairs(Player[color].getSelectedObjects()) do
-        table.insert(out, obj.getDescription())
+        local desc = obj.getDescription()
+        table.insert(out, desc)
+        printToColor("Selected object description:\n" .. desc, color, {0.8, 0.8, 0.8})
     end
     return out
 end
 
-function parseWeapons(descList, weaponType)
-    local parsed = {}
-    for _, desc in ipairs(descList) do
+function parseWeaponsByModel(objects, requestedType)
+    local result = {}
+
+    for _, obj in ipairs(objects) do
+        local desc = obj.getDescription()
         local lines = {}
         for line in string.gmatch(desc, "[^\r\n]+") do
-            table.insert(lines, line)
+            local clean = line:gsub("%b[]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if clean ~= "" then table.insert(lines, clean) end
         end
-        local section = nil
-        for i = 1, #lines do
-            local line = lines[i]:gsub("%b[]", ""):gsub("^%s+", ""):gsub("%s+$", "")
-            if line:find("Ranged weapons") then
-                section = "Ranged"
-            elseif line:find("Melee weapons") then
-                section = "Melee"
-            elseif line:find("Abilities") then
-                section = nil
-            elseif section == weaponType and i < #lines then
-                local name = line
-                local stats = lines[i+1]:gsub("%b[]", "")
-                local a = tonumber(stats:match("A:(%d+)") or 0)
-                local s = tonumber(stats:match("S:(%d+)") or 0)
-                local ap = tonumber(stats:match("AP:([-+]?%d+)") or 0)
-                local d = tonumber(stats:match("D:(%d+)") or 1)
-                local hit = stats:match((weaponType == "Ranged") and "BS:(%d+%+)" or "WS:(%d+%+)")
+
+        for i = #lines, 1, -1 do
+            local line = lines[i]
+            local isRanged = line:match("^%d+%s*\"%s*A:%d+")
+            local isMelee = not isRanged and line:match("^A:%d+")
+
+            if (isRanged and requestedType == "Ranged") or (isMelee and requestedType == "Melee") then
+                local name = "Unknown"
+                for j = i - 1, 1, -1 do
+                    local maybeName = lines[j]
+                    if not maybeName:match("^%d+%s*\"%s*A:%d+") and not maybeName:match("^A:%d+") then
+                        name = maybeName
+                        break
+                    end
+                end
+
+                local stats = extractStatBlock(line)
+                local range = isRanged and line:match("^(%d+)%s*\"") or nil
+
                 local abilities = {}
-                for tag in lines[i+1]:gmatch("%[(.-)%]") do
+                for tag in line:gmatch("%[(.-)%]") do
                     if not tag:match("^[0-9a-fA-F]+$") and tag ~= "-" then
                         for ability in tag:gmatch("[^,]+") do
                             table.insert(abilities, ability:match("^%s*(.-)%s*$"))
                         end
                     end
                 end
-                table.insert(parsed, {
+
+                result[obj] = result[obj] or {}
+                table.insert(result[obj], {
                     name = name,
-                    a = a,
-                    hit = hit,
-                    s = s,
-                    ap = ap,
-                    d = d,
+                    a = stats.a or 1,
+                    hit = stats.hit,
+                    s = stats.s or 0,
+                    ap = stats.ap or 0,
+                    d = stats.d or 1,
+                    range = range,
                     abilities = table.concat(abilities, ", ")
                 })
-                i = i + 1
             end
         end
     end
-    return parsed
+
+    return result
 end
 
-function groupWeapons(weapons, hitKey)
+
+
+
+function groupWeaponsByModel(weaponsByModel, hitKey)
     local groups = {}
-    for _, w in ipairs(weapons) do
-        local key = string.format("%s::A:%d::%s:%s::S:%d::AP:%d::D:%d::%s",
-            w.name, w.a, hitKey, w.hit or "-", w.s, w.ap, w.d, w.abilities or "")
-        if not groups[key] then
-            groups[key] = {count = 0, label = w.name .. "\nA:"..w.a.." "..hitKey..":"..(w.hit or "-")..
-                           " S:"..w.s.." AP:"..w.ap.." D:"..w.d..(w.abilities ~= "" and "\n["..w.abilities.."]" or "")}
+
+    for model, weaponList in pairs(weaponsByModel) do
+        for _, w in ipairs(weaponList) do
+            local key = string.format("%s::A:%d::%s:%s::S:%d::AP:%d::D:%d::%s",
+                w.name, w.a, hitKey, w.hit or "-", w.s, w.ap, w.d, w.abilities or "")
+
+            printToColor(string.format("Grouping key: %s", key), "Red", {1,1,0})
+
+            if not groups[key] then
+                groups[key] = {
+                    count = 0,
+                    label = w.name .. "\nA:" .. w.a .. " " .. hitKey .. ":" .. (w.hit or "-") ..
+                            " S:" .. w.s .. " AP:" .. w.ap .. " D:" .. w.d ..
+                            ((w.abilities ~= "") and "\n[" .. w.abilities .. "]" or "")
+                }
+            end
+
+            groups[key].count = groups[key].count + 1
         end
-        groups[key].count = groups[key].count + 1
     end
+
     return groups
 end
+
 
 function spawnWeaponDice(playerColor, grouped)
     local grid = PLAYER_GRID_SPAWN[playerColor]
@@ -340,7 +418,7 @@ function spawnWeaponDice(playerColor, grouped)
     local dyx, dyz = grid.down[1], grid.down[2]
 
     local rowSize = 5
-    local spacing = 1.6  -- increased dice spacing
+    local spacing = 1.6
     local groupOffsetZ = 0
 
     local groupList = {}
@@ -349,14 +427,17 @@ function spawnWeaponDice(playerColor, grouped)
     end
 
     table.sort(groupList, function(a, b)
-        return a.label < b.label  -- just a consistent order
+        return a.label < b.label
     end)
 
     for _, group in ipairs(groupList) do
-        local attacksPerModel = tonumber(group.label:match("A:(%d+)")) or 0
+        local groupColor = group.color or stringColorToRGB(playerColor)
+        local attacksPerModel = tonumber(group.label:match("A:(%d+)") or 0)
         local totalDice = group.count * attacksPerModel
         local rows = math.ceil(totalDice / rowSize)
         local groupOffsetX = 0
+
+        printToColor(string.format("Spawning group: %s | Models: %d | Dice: %d", group.label, group.count, totalDice), playerColor, {0.6, 1, 0.6})
 
         for i = 0, totalDice - 1 do
             local row = math.floor(i / rowSize)
@@ -367,11 +448,11 @@ function spawnWeaponDice(playerColor, grouped)
                 z = origin.z + col * spacing * dz + row * spacing * dyz + groupOffsetZ,
             }
             spawnObject({
-                type = "Die_6",
+                type = "Die_6_Rounded",
                 position = pos,
                 rotation = {0, math.random() * 360, 0},
                 callback_function = function(obj)
-                    obj.setColorTint(stringColorToRGB(playerColor))
+                    obj.setColorTint(groupColor)
                 end
             })
         end
@@ -395,15 +476,390 @@ function spawnWeaponDice(playerColor, grouped)
             sound = false,
             callback_function = function(obj)
                 obj.TextTool.setValue(group.label)
+                obj.TextTool.setFontColor(groupColor)
             end
         })
 
-        -- Advance group offset along the down axis by height of this group + padding
         local groupSpacing = (rows + 1.5) * spacing
         groupOffsetZ = groupOffsetZ + groupSpacing * dyz
         groupOffsetX = groupOffsetX + groupSpacing * dyx
     end
 end
+
+
+
+
+
+
+-- Global state
+measuringState = { source = nil, target = nil }
+highlightedObjects = {}
+
+function clearHighlights()
+    for _, obj in ipairs(highlightedObjects) do
+        if obj and obj.highlightOff then obj.highlightOff() end
+    end
+    highlightedObjects = {}
+end
+
+
+-- Hotkey targeting system for attack eligibility
+
+-- Hotkey targeting system for attack eligibility with visual aid
+
+-- Globals to track targeting state
+local targetingState = {
+    sourceGUID = nil,
+    sourceUnit = {},
+    targetGUID = nil,
+    targetUnit = {},
+    colorMap = {}  -- label -> RGB
+}
+
+local allVectorLines = {}  -- used by setVectorLines()
+
+
+-- Helper: extract uuid from an object's tags
+function getUUIDFromTags(obj)
+    for _, tag in ipairs(obj.getTags()) do
+        local uuid = tag:match("^uuid:(.+)")
+        if uuid then return uuid end
+    end
+    return nil
+end
+
+-- Helper: extract weapon range in inches
+function extractRangeInches(rangeStr)
+    if not rangeStr then return nil end
+    local value = rangeStr:match("(%d+)%s*\"")
+    return tonumber(value)
+end
+
+-- Generate deterministic color from string
+function colorFromLabel(label)
+    local r = 0.5 + 0.5 * math.abs(math.sin(#label * 13))
+    local g = 0.5 + 0.5 * math.abs(math.sin(#label * 23))
+    local b = 0.5 + 0.5 * math.abs(math.sin(#label * 37))
+    return {r, g, b}
+end
+
+-- Clear previous draw lines
+function clearDraw()
+    Global.setVectorLines({})
+end
+
+
+-- Override scripting button down (B = 1, C = 2, K = 3)
+function onScriptingButtonDown(index, playerColor)
+    if index == 1 then  -- 'B' key pressed
+        log(playerColor .. " pressed Button 1 (Select unit)")
+
+        local hoverObj = Player[playerColor].getHoverObject()
+        if not hoverObj then
+            broadcastToColor("No object under pointer.", playerColor, {1,0.5,0.5})
+            return
+        end
+
+        local uuid = getUUIDFromTags(hoverObj)
+        if not uuid then
+            broadcastToColor("Hovered model has no UUID tag.", playerColor, {1,0.5,0.5})
+            return
+        end
+
+        if not targetingState.sourceGUID then
+            targetingState.sourceGUID = uuid
+            targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
+            for _, obj in ipairs(targetingState.sourceUnit) do obj.highlightOn({0,1,0}) end
+            broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
+        else
+            targetingState.targetGUID = uuid
+            targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
+            for _, obj in ipairs(targetingState.targetUnit) do obj.highlightOn({1,0,0}) end
+            broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
+        end
+
+    elseif index == 2 then  -- 'C' key pressed to confirm fire
+        log(playerColor .. " pressed Button 2 (Confirm)")
+
+        if not targetingState.sourceUnit or not targetingState.targetUnit then
+            broadcastToColor("Select source and target units first.", playerColor, {1,1,0})
+            return
+        end
+
+        -- Clear prior vector lines
+        Global.setVectorLines({})
+
+        local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
+        local groupedByLabel = {}
+        local allVectorLines = {}
+
+        for source, weapons in pairs(weaponMap) do
+            for _, weapon in ipairs(weapons) do
+                local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
+                              " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
+                              ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
+
+                local rangeInches = tonumber(weapon.range)
+                if not rangeInches then ::continue:: end
+
+                local sourcePos = source.getPosition()
+                local closestTarget = nil
+                local closestDist = math.huge
+
+                for _, target in ipairs(targetingState.targetUnit) do
+                    local dist = (sourcePos - target.getPosition()):magnitude()
+                    if dist < closestDist and dist <= rangeInches * 0.75 then
+                        closestTarget = target
+                        closestDist = dist
+                    end
+                end
+
+                if closestTarget then
+                    groupedByLabel[label] = groupedByLabel[label] or {
+                        label = label,
+                        color = colorFromLabel(label),
+                        count = 0,
+                        instances = {}
+                    }
+                    groupedByLabel[label].count = groupedByLabel[label].count + 1
+                    table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
+
+                    local tgt = closestTarget.getPosition()
+                    local mid = {
+                        (sourcePos.x + tgt.x) / 2,
+                        math.max(sourcePos.y, tgt.y) + 0.3 + 0.2 * groupedByLabel[label].count,
+                        (sourcePos.z + tgt.z) / 2
+                    }
+
+                    local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
+                    local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
+
+                    table.insert(allVectorLines, {
+                        color = groupedByLabel[label].color,
+                        points = {srcRaise, mid, tgtRaise},
+                        thickness = 0.05
+                    })
+                end
+
+                ::continue::
+            end
+        end
+
+        Global.setVectorLines(allVectorLines)
+        spawnWeaponDice(playerColor, groupedByLabel)
+
+    elseif index == 3 then  -- 'K' key to clear
+        log(playerColor .. " pressed Button 3 (Clear)")
+
+        for _, obj in ipairs(targetingState.sourceUnit) do obj.highlightOff() end
+        for _, obj in ipairs(targetingState.targetUnit) do obj.highlightOff() end
+        Global.setVectorLines({})
+        targetingState = {
+            sourceUnit = {}, targetUnit = {}, sourceGUID = nil, targetGUID = nil,
+            drawHandles = {}, colorMap = {}
+        }
+        broadcastToColor("Cleared target/source selection.", playerColor, {0.8,0.8,0.8})
+    end
+end
+
+
+
+-- Global state tables
+unitOwnerByUUID = {}        -- unit UUID -> first player color to pick up
+unitGroupsByColor = {}      -- color -> list of unit UUIDs
+unitCandidates = {}         -- GUID -> object waiting for group match
+
+-- Triggered when object is spawned into world
+function onObjectSpawn(obj)
+    -- Wait to avoid clashing with object's internal initialization
+    Wait.frames(function()
+        if not obj then return end
+
+        local script = obj.getLuaScript()
+        if not script or #script < 50 then
+            log("Spawned object has no meaningful script: " .. obj.getGUID())
+            return
+        end
+
+        -- Attempt to extract unitData block from the object's script
+        local unitData = extractUnitDataFromScript(script)
+        if not unitData or not unitData.uuid then
+            log("No valid unitData or UUID found in script for: " .. obj.getGUID())
+            return
+        end
+
+        local uuid = unitData.uuid
+        local uuidTag = "uuid:" .. uuid
+        local group = getObjectsWithTag(uuidTag)
+
+        if not group or #group == 0 then
+            log("No other tagged models found for unit UUID: " .. uuid .. " from " .. obj.getGUID())
+            return
+        end
+
+        log("Registering unit UUID: " .. uuid .. " with " .. #group .. " models")
+        for _, model in ipairs(group) do
+            if not model.getVar("unitUUID") then
+                model.setVar("unitUUID", uuid)
+                log("Set unitUUID on model " .. model.getGUID() .. " -> " .. uuid)
+            end
+        end
+    end, 20)
+end
+
+function extractUnitDataFromScript(code)
+    local lines = {}
+    local inside = false
+    local braceDepth = 0
+
+    for line in code:gmatch("[^\r\n]+") do
+        if not inside then
+            if line:find("unitData%s*=%s*{") then
+                inside = true
+                braceDepth = 1
+                table.insert(lines, line)
+            end
+        elseif inside then
+            table.insert(lines, line)
+            -- Count opening and closing braces to find when the block ends
+            local openCount = select(2, line:gsub("{", ""))
+            local closeCount = select(2, line:gsub("}", ""))
+            braceDepth = braceDepth + openCount - closeCount
+
+            if braceDepth <= 0 then break end
+        end
+    end
+
+    if #lines == 0 then
+        log("[unitData] No unitData block found.")
+        return nil
+    end
+
+    local block = table.concat(lines, "\n")
+    local uuid = block:match('uuid%s*=%s*"([%w%-]+)"')
+
+    if uuid then
+        log("[unitData] Extracted unit UUID: " .. uuid)
+        return { uuid = uuid }
+    else
+        log("[unitData] Failed to find UUID in full block:\n" .. block)
+        return nil
+    end
+end
+
+
+function onObjectPickUp(player_color, obj)
+    local objUUID = extractUUIDFromTag(obj)
+    if not objUUID then
+        return
+    end
+
+    if hasTag(obj, "ownerClaimed:true") then
+        return
+    end
+
+    local group = getObjectsWithTag("uuid:" .. objUUID)
+    if #group == 0 then
+        return
+    end
+
+    for _, model in ipairs(group) do
+        model.addTag("ownerClaimed:true")
+    end
+
+    unitOwnerByUUID[objUUID] = player_color
+    log("[UnitTracker] Player " .. player_color .. " claimed unit UUID " .. objUUID .. " (" .. #group .. " models tagged)")
+end
+
+-- Extract UUID from tag like "uuid:xyz123"
+function extractUUIDFromTag(obj)
+    local tags = obj.getTags()
+    for _, tag in ipairs(tags) do
+        local match = tag:match("^uuid:(%w+)$")
+        if match then return match end
+    end
+    return nil
+end
+
+-- Utility to check if object has a specific tag
+function hasTag(obj, tagName)
+    local tags = obj.getTags()
+    for _, tag in ipairs(tags) do
+        if tag == tagName then return true end
+    end
+    return false
+end
+
+
+
+
+
+function hasStatline(desc)
+    desc = desc or ""
+    local statlineHeaders = { "M", "T", "Sv", "W", "Ld", "OC" }
+    for line in desc:gmatch("[^\r\n]+") do
+        local tokens = {}
+        for token in line:gmatch("%S+") do table.insert(tokens, token) end
+        local match = 0
+        for _, header in ipairs(statlineHeaders) do
+            for _, token in ipairs(tokens) do
+                if token == header then match = match + 1 break end
+            end
+        end
+        if match >= 4 then return true end
+    end
+    return false
+end
+
+function maybeAddContextMenus(obj)
+    if not hasStatline(obj.getDescription()) then return end
+
+    obj.addContextMenuItem("Create Unit", function(playerColor)
+        assignToUnit(obj, playerColor)
+    end)
+
+    obj.addContextMenuItem("Disband Unit", function(playerColor)
+        disbandUnit(obj, playerColor)
+    end)
+end
+
+function assignToUnit(obj, playerColor)
+    local guid = obj.getGUID()
+
+    if objectToUnitMap[guid] then
+        broadcastToColor("Object is already in a unit.", playerColor, {1, 0.6, 0.6})
+        return
+    end
+
+    unitGroups[playerColor] = unitGroups[playerColor] or {}
+    local newId = #unitGroups[playerColor] + 1
+
+    unitGroups[playerColor][newId] = { guid }
+    objectToUnitMap[guid] = { color = playerColor, id = newId }
+
+    broadcastToColor("Assigned object to unit #" .. newId, playerColor, {0.7, 1, 0.7})
+end
+
+function disbandUnit(obj, playerColor)
+    local guid = obj.getGUID()
+    local meta = objectToUnitMap[guid]
+    if not meta or meta.color ~= playerColor then
+        broadcastToColor("Object is not part of a unit you control.", playerColor, {1, 0.4, 0.4})
+        return
+    end
+
+    local group = unitGroups[playerColor][meta.id]
+    if not group then return end
+
+    for _, g in ipairs(group) do
+        objectToUnitMap[g] = nil
+    end
+    unitGroups[playerColor][meta.id] = nil
+    broadcastToColor("Disbanded unit #" .. meta.id, playerColor, {1, 0.4, 0.4})
+end
+
+
+
 
 
 function onSave()
@@ -711,5 +1167,3 @@ function moveOneFromDeckToZone(params)
     end
     deckObj.takeObject(takeParams)
 end
-
-
