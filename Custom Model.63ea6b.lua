@@ -22,6 +22,75 @@ local toggleVars = {
     "anti_active"  -- new toggle for whether target has matching keyword
 }
 
+local function extractStatBlock(stats)
+    local out = {
+        a = 0,
+        hit = nil,
+        s = 0,
+        ap = 0,
+        d = 1,
+    }
+
+    for token in stats:gmatch("[^%s]+") do
+        local key, value = token:match("([A-Z]+):([%-%+%d]+)")
+        if key and value then
+            if key == "A" then
+                out.a = tonumber(value)
+            elseif key == "BS" or key == "WS" then
+                out.hit = value
+            elseif key == "S" then
+                out.s = tonumber(value)
+            elseif key == "AP" then
+                out.ap = tonumber(value)
+            elseif key == "D" then
+                out.d = tonumber(value)
+            end
+        end
+    end
+
+    return out
+end
+
+
+function applyWeaponLabel(labelText)
+    local stats = extractStatBlock(labelText)
+
+    -- Apply base stats
+    if stats.hit then updateInput("bs", stats.hit:gsub("%D", "")) end
+    if stats.s then updateInput("s", tostring(stats.s)) end
+    if stats.ap then updateInput("ap", tostring(stats.ap)) end
+    if stats.d then updateInput("d", tostring(stats.d)) end
+
+    -- Look for abilities in [brackets]
+    local abilBlock = labelText:match("%[(.-)%]")
+    if abilBlock then
+        for ability in abilBlock:gmatch("[^,%]]+") do
+            local trimmed = ability:gsub("^%s*", ""):gsub("%s*$", ""):lower()
+
+            if trimmed == "sustained hits" then
+                updateToggle("sustained_hits", true)
+            elseif trimmed == "devastating wounds" then
+                updateToggle("devastating_wounds", true)
+            -- Add other mappings here
+            end
+        end
+    end
+end
+
+function updateInput(var, val)
+    log("update input")
+    log(var)
+    log(val)
+
+    local index = inputIndices[var]
+    if index then
+        log("✏️ Editing input at index: " .. tostring(index) .. " with value: " .. tostring(val))
+        self.editInput({index = index, value = val})
+        inputStates[var] = val
+    end
+end
+
+
 
 -- Final Action
 function onRollPressed(obj, color)
