@@ -74,6 +74,7 @@ allVectorLines = {}  -- used by setVectorLines()
 bbVectorLines = {}
 
 
+
 --[[
 GUID reference for primary / mission / deployment cards
 Yeah, I could use variables but I didn't, oh well
@@ -550,12 +551,22 @@ end
 
 
 function resetTargetingState()
+
+    for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
+    for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
+
     targetingState.sourceGUID = nil
     targetingState.sourceUnit = nil
     targetingState.targetGUID = nil
     targetingState.targetUnit = nil
     targetingState.colorMap = {}
     targetingState.confirmed = false
+    targetingState.previewing = false
+
+    
+    Global.setVectorLines({})
+    clearSpawnedDiceObjects()
+
 end
 
 function clearSpawnedDiceObjects()
@@ -1055,6 +1066,66 @@ function startHeightAdjustLoop(playerColor, index)
     end, 0.01)  -- repeat every 0.2s
 end
 
+function previewTargeting(playerColor)
+    local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
+    local groupedByLabel = {}
+    local allVectorLines = {}
+
+    for source, weapons in pairs(weaponMap) do
+        for _, weapon in ipairs(weapons) do
+            local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
+                          " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
+                          ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
+            local rangeInches = tonumber(weapon.range)
+            if rangeInches then  
+
+                local sourcePos = source.getPosition()
+                local closestTarget = nil
+                local closestDist = math.huge
+                for _, target in ipairs(targetingState.targetUnit) do
+                    local dist = getModelDistance(source, target)
+                    if dist < closestDist and dist <= rangeInches then
+                        closestTarget = target
+                        closestDist = dist
+                    end
+                end
+                if closestTarget then
+                    groupedByLabel[label] = groupedByLabel[label] or {
+                        label = label,
+                        color = colorFromLabel(label, playerColor),
+                        count = 0,
+                        instances = {}
+                    }
+                    groupedByLabel[label].count = groupedByLabel[label].count + 1
+                    table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
+
+                    local tgt = closestTarget.getPosition()
+                    local mid = {
+                        (sourcePos.x + tgt.x) / 2,
+                        math.max(sourcePos.y, tgt.y) + 0.3 + 0.2 * groupedByLabel[label].count,
+                        (sourcePos.z + tgt.z) / 2
+                    }
+                    local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
+                    local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
+
+                    table.insert(allVectorLines, {
+                        color = groupedByLabel[label].color,
+                        points = {srcRaise, mid, tgtRaise},
+                        thickness = 0.05
+                    })
+                end
+            end
+        end
+    end
+
+    Global.setVectorLines(allVectorLines)
+    spawnWeaponDice(playerColor, groupedByLabel)
+    targetingState.confirmed = true
+    targetingState.previewing = true
+    broadcastToColor("Previewing targeting: press 7 to add/remove source models, or 8 to confirm or clear.", playerColor, {1,1,0})
+end
+
+
 -- Override scripting button down (B = 1, C = 2, K = 3)
 -- Override scripting button down (B = 1, C = 2, K = 3)
 -- Override scripting button down (B = 1, C = 2, K = 3)
@@ -1096,7 +1167,7 @@ function onScriptingButtonDown(index, playerColor)
             clearSpawnedDiceObjects()
             targetingState.confirmed = false
             targetingState.previewing = false
-            onScriptingButtonDown(8, playerColor)  -- regenerate preview
+            previewTargeting(playerColor)  -- regenerate preview
             return
         end
 
@@ -1119,7 +1190,8 @@ function onScriptingButtonDown(index, playerColor)
             targetingState.targetGUID = uuid
             targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
             broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
-            onScriptingButtonDown(8, playerColor)  -- immediately trigger preview
+            previewTargeting(playerColor)
+
             return
         end
 
@@ -1137,69 +1209,15 @@ function onScriptingButtonDown(index, playerColor)
             end
         end
 
-    elseif index == 8 then  -- Confirm
-        if targetingState.sourceUnit and targetingState.targetUnit then
-            local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
-            local groupedByLabel = {}
-            local allVectorLines = {}
-
-            for source, weapons in pairs(weaponMap) do
-                for _, weapon in ipairs(weapons) do
-                    local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
-                                  " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
-                                  ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
-                    local rangeInches = tonumber(weapon.range)
-                    if not rangeInches then ::continue:: end
-
-                    local sourcePos = source.getPosition()
-                    local closestTarget = nil
-                    local closestDist = math.huge
-                    for _, target in ipairs(targetingState.targetUnit) do
-                        local dist = getModelDistance(source, target)
-                        if dist < closestDist and dist <= rangeInches then
-                            closestTarget = target
-                            closestDist = dist
-                        end
-                    end
-                    if closestTarget then
-                        groupedByLabel[label] = groupedByLabel[label] or {
-                            label = label,
-                            color = colorFromLabel(label, playerColor),
-                            count = 0,
-                            instances = {}
-                        }
-                        groupedByLabel[label].count = groupedByLabel[label].count + 1
-                        table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
-
-                        local tgt = closestTarget.getPosition()
-                        local mid = {
-                            (sourcePos.x + tgt.x) / 2,
-                            math.max(sourcePos.y, tgt.y) + 0.3 + 0.2 * groupedByLabel[label].count,
-                            (sourcePos.z + tgt.z) / 2
-                        }
-                        local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
-                        local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
-
-                        table.insert(allVectorLines, {
-                            color = groupedByLabel[label].color,
-                            points = {srcRaise, mid, tgtRaise},
-                            thickness = 0.05
-                        })
-                    end
-                    ::continue::
-                end
-            end
-
-            Global.setVectorLines(allVectorLines)
-            spawnWeaponDice(playerColor, groupedByLabel)
-            targetingState.confirmed = true
-            targetingState.previewing = true
-            broadcastToColor("Previewing targeting: press 7 to add/remove source models, or 8 to confirm.", playerColor, {1,1,0})
-
-        elseif targetingState.previewing then
-            broadcastToColor("Targeting finalized.", playerColor, {0.5, 1, 0.5})
-            targetingState.previewing = false
-
+    elseif index == 8 then  -- Only clear targeting
+        if targetingState.previewing then
+            resetTargetingState()
+            currentHeightMarker = {pos = nil, height = nil}
+            broadcastToColor("Cleared selection and targeting preview.", playerColor, {0.8,0.8,0.8})
+        
+        elseif targetingState.sourceUnit and targetingState.targetUnit then
+            previewTargeting(playerColor)
+    
         elseif currentHeightMarker.pos and currentHeightMarker.height then
             local selected = Player[playerColor].getSelectedObjects()
             if #selected == 0 then
@@ -1214,12 +1232,8 @@ function onScriptingButtonDown(index, playerColor)
             Global.setVectorLines({})
             currentHeightMarker = {pos = nil, height = nil}
             broadcastToColor("Applied height to " .. updated .. " model(s).", playerColor, {0, 1, 0})
-
+    
         else
-            for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
-            for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
-            Global.setVectorLines({})
-            clearSpawnedDiceObjects()
             resetTargetingState()
             currentHeightMarker = {pos = nil, height = nil}
             broadcastToColor("Cleared selection and height marker.", playerColor, {0.8,0.8,0.8})
@@ -1281,11 +1295,13 @@ function onObjectSpawn(obj)
         for _, model in ipairs(group) do
             if not model.getVar("unitUUID") then
                 model.setVar("unitUUID", uuid)
+                model.use_hands = false
                 log("Set unitUUID on model " .. model.getGUID() .. " -> " .. uuid)
             end
         end
     end, 20)
 end
+
 
 function extractUnitDataFromScript(code)
     local lines = {}
