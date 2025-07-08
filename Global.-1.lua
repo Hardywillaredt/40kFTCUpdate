@@ -503,12 +503,10 @@ function spawnWeaponDice(playerColor, grouped)
             table.insert(groupDice, die)
         end
 
-
         local rowForButton = math.max(numRows + 1, 6)
-        -- Raise the object off the table a bit more
         local buttonPos = {
             x = origin.x + groupOffsetX + 2 * spacing * dx,
-            y = origin.y - 0.3,  -- <-- higher off table
+            y = origin.y - 0.3,
             z = origin.z + (rowForButton) * spacing * dz,
         }
 
@@ -527,7 +525,7 @@ function spawnWeaponDice(playerColor, grouped)
                     label = "Load Roll",
                     click_function = "onLoadRollClicked",
                     function_owner = Global,
-                    position = {0, 0.5, 0},  -- <-- lift button text above the base
+                    position = {0, 0.5, 0},
                     rotation = {0, 0, 0},
                     width = 1600,
                     height = 600,
@@ -540,15 +538,15 @@ function spawnWeaponDice(playerColor, grouped)
             end
         })
 
-
         table.insert(spawnedDiceObjects, btn)
         table.insert(diceGroupButtons, btn)
 
-        -- Add lateral spacing for next group
-        local groupSpacing = (math.min(totalDice, rowSize) + 2) * spacing
+        -- Uniform lateral spacing for next group
+        local groupSpacing = (rowSize + 2) * spacing
         groupOffsetX = groupOffsetX + groupSpacing * dx
     end
 end
+
 
 
 function resetTargetingState()
