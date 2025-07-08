@@ -55,23 +55,45 @@ end
 function applyWeaponLabel(labelText)
     local stats = extractStatBlock(labelText)
 
-    -- Apply base stats
-    if stats.hit then updateInput("bs", stats.hit:gsub("%D", "")) end
-    if stats.s then updateInput("s", tostring(stats.s)) end
-    if stats.ap then updateInput("ap", tostring(stats.ap)) end
-    if stats.d then updateInput("d", tostring(stats.d)) end
+    -- Apply base stats only if tracked
+    if stats.hit and inputVars["bs"] then updateInput("bs", stats.hit:gsub("%D", "")) end
+    if stats.s and inputVars["s"] then updateInput("s", tostring(stats.s)) end
+    if stats.ap and inputVars["ap"] then updateInput("ap", tostring(stats.ap)) end
+    if stats.d and inputVars["d"] then updateInput("d", tostring(stats.d)) end
 
-    -- Look for abilities in [brackets]
+    -- Parse abilities inside brackets
     local abilBlock = labelText:match("%[(.-)%]")
     if abilBlock then
         for ability in abilBlock:gmatch("[^,%]]+") do
-            local trimmed = ability:gsub("^%s*", ""):gsub("%s*$", ""):lower()
+            local trimmed = ability:gsub("^%s*", ""):gsub("%s*$", "")
+            local lowerTrimmed = trimmed:lower()
 
-            if trimmed == "sustained hits" then
+            -- Sustained Hits X
+            local shVal = trimmed:match("Sustained Hits%s*(%d+)")
+            if shVal and inputVars["sustained_hits"] then
                 updateToggle("sustained_hits", true)
-            elseif trimmed == "devastating wounds" then
+            end
+
+            -- Devastating Wounds
+            if lowerTrimmed == "devastating wounds" and toggleVars["devastating_wounds"] then
                 updateToggle("devastating_wounds", true)
-            -- Add other mappings here
+
+            -- Rapid Fire N
+            elseif trimmed:match("Rapid Fire%s*%d+") and toggleVars["lethal_hits"] then
+                -- Only toggle if you use 'lethal_hits' for this or want to add a new key
+                updateToggle("lethal_hits", true)
+
+            -- Ignores Cover → not tracked
+            -- Psychic → not tracked
+            -- Anti-X Y+
+            elseif trimmed:match("Anti%-%a+ %d+%+") then
+                local antiVal = trimmed:match("(%d+)%+")
+                if antiVal and inputVars["anti_val"] then
+                    updateInput("anti_val", antiVal)
+                    if toggleVars["anti_active"] then
+                        updateToggle("anti_active", true)
+                    end
+                end
             end
         end
     end

@@ -282,16 +282,12 @@ function onChat(message, player)
         local fullText = table.concat(descs, "\n---\n")
         printToColor("Full concatenated description block:\n" .. fullText, color, {1, 1, 0.6})
         log("[" .. player.steam_name .. "]: " .. fullText)
-        local weapons = parseWeaponsByModel(descs, "Ranged")
-        local grouped = groupWeapons(weapons, "bs")
         spawnWeaponDice(color, grouped)
     elseif message == "!attack" then
         local descs = getSelectedDescriptions(color)
         local fullText = table.concat(descs, "\n---\n")
         printToColor("Full concatenated description block:\n" .. fullText, color, {1, 1, 0.6})
         log("[" .. player.steam_name .. "]: " .. fullText)
-        local weapons = parseWeaponsByModel(descs, "Melee")
-        local grouped = groupWeapons(weapons, "ws")
         spawnWeaponDice(color, grouped)
     end
     if message:lower() == "!drawlos" then
@@ -302,20 +298,69 @@ function onChat(message, player)
 
 end
 
+-- Updated dice expression parser and model support
+
+-- Function to parse dice expressions like "2D6+3", "D6+2", "3", etc.
+-- Returns (numDice, numSides, flatBonus)
+function parseDiceExpression(expr)
+    expr = expr:upper():gsub("%s+", "")  -- Normalize: uppercase and strip whitespace
+
+    -- Match forms: XdY+Z, dY+Z, XdY, dY, Z
+    local n, s, b = expr:match("^(%d+)D(%d+)%+(%d+)$")
+    if n then return tonumber(n), tonumber(s), tonumber(b) end
+
+    n, s = expr:match("^(%d+)D(%d+)$")
+    if n then return tonumber(n), tonumber(s), 0 end
+
+    s, b = expr:match("^D(%d+)%+(%d+)$")
+    if s then return 1, tonumber(s), tonumber(b) end
+
+    s = expr:match("^D(%d+)$")
+    if s then return 1, tonumber(s), 0 end
+
+    b = expr:match("^(%d+)$")
+    if b then return tonumber(b), 1, 0 end
+
+    return 0, 1, 0  -- Fallback: 0 dice of 1 side with 0 bonus
+end
+
+-- Stringify dice expressions from components
+function formatDiceExpression(n, s, b)
+    if n == 0 then return tostring(b or 0) end
+    local base = (n > 1) and (n .. "D" .. s) or ("D" .. s)
+    if b and b > 0 then
+        return base .. "+" .. b
+    else
+        return base
+    end
+end
+
+-- Updated weapon label stringification
+function weaponToLabel(weapon)
+    local attackStr = formatDiceExpression(weapon.a_n or 1, weapon.a_s or 1, weapon.a_b or 0)
+    local damageStr = formatDiceExpression(weapon.d_n or 1, weapon.d_s or 1, weapon.d_b or 0)
+    local statLine = "A:" .. attackStr .. " BS:" .. (weapon.hit or "-") ..
+                     " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. damageStr
+    local abilityStr = (weapon.abilities and weapon.abilities ~= "") and ("\n[" .. weapon.abilities .. "]") or ""
+    return weapon.name .. "\n" .. statLine .. abilityStr
+end
+
+
+
 local function extractStatBlock(stats)
     local out = {
-        a = 0,
+        a_n = 0, a_s = 1, a_mod = 0,  -- attacks: num dice, sides, flat modifier
+        d_n = 1, d_s = 1, d_mod = 0,  -- damage: num dice, sides, flat modifier
         hit = nil,
         s = 0,
         ap = 0,
-        d = 1,
     }
 
     for token in stats:gmatch("[^%s]+") do
-        local key, value = token:match("([A-Z]+):([%-%+%d]+)")
+        local key, value = token:match("([A-Z]+):([%-%+%w]+)")
         if key and value then
             if key == "A" then
-                out.a = tonumber(value)
+                out.a_n, out.a_s, out.a_mod = parseDiceExpression(value)
             elseif key == "BS" or key == "WS" then
                 out.hit = value
             elseif key == "S" then
@@ -323,13 +368,15 @@ local function extractStatBlock(stats)
             elseif key == "AP" then
                 out.ap = tonumber(value)
             elseif key == "D" then
-                out.d = tonumber(value)
+                out.d_n, out.d_s, out.d_mod = parseDiceExpression(value)
             end
         end
     end
 
     return out
 end
+
+
 
 
 function getSelectedDescriptions(color)
@@ -349,15 +396,18 @@ function parseWeaponsByModel(objects, requestedType)
         local desc = obj.getDescription()
         local lines = {}
         for line in string.gmatch(desc, "[^\r\n]+") do
-            local clean = line:gsub("%b[]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+            -- Remove bracketed hex/ID values, but preserve gameplay tags
+            line = line:gsub("%[(%s*[%x%-]+%s*)%]", "")
+            local clean = line:gsub("^%s+", ""):gsub("%s+$", "")
             if clean ~= "" then table.insert(lines, clean) end
         end
+        
 
         local i = 1
         while i <= #lines do
             local line = lines[i]
-            local isRanged = line:match("^%d+%s*\"%s*A:%d+")
-            local isMelee = not isRanged and line:match("^A:%d+")
+            local isRanged = line:match("^%d+%s*\"%s*A:[%w/]+")
+            local isMelee = not isRanged and line:match("^A:[%w/]+")
 
             if (isRanged and requestedType == "Ranged") or (isMelee and requestedType == "Melee") then
                 -- Look upward for the weapon name
@@ -370,32 +420,67 @@ function parseWeaponsByModel(objects, requestedType)
                     end
                 end
 
+
+                local logLines = {}
+
+                table.insert(logLines, "▶️ Parsing weapon")
+                table.insert(logLines, "Name: " .. name)
+                table.insert(logLines, "Stats line: " .. line)
+
                 local stats = extractStatBlock(line)
                 local range = isRanged and line:match("^(%d+)%s*\"") or nil
 
+                -- Find abilities: scan lines between current stat line and next weapon entry
                 local abilities = {}
-                for tag in line:gmatch("%[(.-)%]") do
-                    if not tag:match("^[0-9a-fA-F]+$") and tag ~= "-" then
-                        for ability in tag:gmatch("[^,]+") do
-                            table.insert(abilities, ability:match("^%s*(.-)%s*$"))
+
+                local nextWeaponLine = #lines + 1
+                for j = i + 1, #lines do
+                    if lines[j]:match("^%d+%s*\"%s*A:%d+") or lines[j]:match("^A:%d+") then
+                        nextWeaponLine = j - 1
+                        break
+                    end
+                end
+
+                table.insert(logLines, "Next weapon stats at line: " .. lines[nextWeaponLine])
+                table.insert(logLines, "Ability lines:")
+
+                table.insert(logLines, "current I " .. tostring((i)))
+                table.insert(logLines, "next weapon line " .. tostring(nextWeaponLine))
+                for j = i, nextWeaponLine do
+                    local abilityLine = lines[j]
+                    table.insert(logLines, "  • " .. abilityLine)
+                    for tag in abilityLine:gmatch("%[(.-)%]") do
+                        if not tag:match("^[0-9a-fA-F]+$") and tag ~= "-" then
+                            for ability in tag:gmatch("[^,]+") do
+                                table.insert(abilities, ability:match("^%s*(.-)%s*$"))
+                            end
                         end
                     end
                 end
 
-                log("abilities")
-                log(abilities)
+                table.insert(logLines, "Parsed abilities: " .. table.concat(abilities, ", "))
+                table.insert(logLines, "-----------------------------")
 
                 result[obj] = result[obj] or {}
                 table.insert(result[obj], {
                     name = name,
-                    a = stats.a or 1,
+                    a_n = stats.a_n or 1,
+                    a_s = stats.a_s or 1,
+                    a_mod = stats.a_mod or 0,
                     hit = stats.hit,
                     s = stats.s or 0,
                     ap = stats.ap or 0,
-                    d = stats.d or 1,
+                    d_n = stats.d_n or 1,
+                    d_s = stats.d_s or 1,
+                    d_mod = stats.d_mod or 0,
                     range = range,
                     abilities = table.concat(abilities, ", ")
                 })
+                
+
+                
+
+                log(table.concat(logLines, "\n"))
             end
 
             i = i + 1
@@ -403,6 +488,26 @@ function parseWeaponsByModel(objects, requestedType)
     end
 
     return result
+end
+
+function formatWeaponLabel(weapon)
+    -- Format A (attacks)
+    local a = (weapon.a_s == 1) and tostring(weapon.a_n) or (weapon.a_n .. "d" .. weapon.a_s)
+
+    -- Format D (damage)
+    local d = (weapon.d_s == 1) and tostring(weapon.d_n) or (weapon.d_n .. "d" .. weapon.d_s)
+
+    -- Format hit
+    local bs = weapon.hit or "-"
+
+    -- Format abilities
+    local abilities = (weapon.abilities and weapon.abilities ~= "") and ("\n[" .. weapon.abilities .. "]") or ""
+
+    return weapon.name .. "\nA:" .. a .. " BS:" .. bs ..
+           " S:" .. tostring(weapon.s) ..
+           " AP:" .. tostring(weapon.ap) ..
+           " D:" .. d ..
+           abilities
 end
 
 
@@ -422,9 +527,7 @@ function groupWeaponsByModel(weaponsByModel, hitKey)
             if not groups[key] then
                 groups[key] = {
                     count = 0,
-                    label = w.name .. "\nA:" .. w.a .. " " .. hitKey .. ":" .. (w.hit or "-") ..
-                            " S:" .. w.s .. " AP:" .. w.ap .. " D:" .. w.d ..
-                            ((w.abilities ~= "") and "\n[" .. w.abilities .. "]" or "")
+                    label = formatWeaponLabel(w)
                 }
             end
 
@@ -436,6 +539,34 @@ function groupWeaponsByModel(weaponsByModel, hitKey)
 end
 
 
+
+function wrapText(text, maxLen)
+    local wrappedLines = {}
+
+    for rawLine in text:gmatch("[^\n]+") do
+        local count = 0
+        local line = ""
+
+        for word in rawLine:gmatch("%S+") do
+            if count + #word > maxLen then
+                table.insert(wrappedLines, line)
+                line = word
+                count = #word
+            else
+                if count > 0 then
+                    line = line .. " "
+                    count = count + 1
+                end
+                line = line .. word
+                count = count + #word
+            end
+        end
+
+        table.insert(wrappedLines, line)
+    end
+
+    return table.concat(wrappedLines, "\n")
+end
 
 
 
@@ -452,7 +583,7 @@ function spawnWeaponDice(playerColor, grouped)
     local dz = grid.zDir
 
     local rowSize = 5
-    local spacing = 1.5
+    local spacing = 1.8
     local groupOffsetX = 0
 
     local groupList = {}
@@ -466,8 +597,10 @@ function spawnWeaponDice(playerColor, grouped)
 
     for _, group in ipairs(groupList) do
         local groupColor = group.color or stringColorToRGB(playerColor)
-        local attacksPerModel = tonumber(group.label:match("A:(%d+)") or 0)
-        local totalDice = group.count * attacksPerModel
+        local attackExpr = group.label:match("A:([%dDd]+)")
+        local numDice, sides = parseDiceExpression(attackExpr or "0")
+        local avgAttacksPerModel = numDice * ((sides + 1) / 2)
+        local totalDice = math.ceil(group.count * avgAttacksPerModel)
         local numRows = math.ceil(totalDice / rowSize)
         local groupDice = {}
 
@@ -480,6 +613,8 @@ function spawnWeaponDice(playerColor, grouped)
             z = origin.z + 0 * spacing * dz,
         }
 
+        local myLabelText = wrapText(group.label, 30)
+
         local diceText = spawnObject({
             type = "3DText",
             position = labelPos,
@@ -491,7 +626,7 @@ function spawnWeaponDice(playerColor, grouped)
             scale = {0.8, 0.8, 0.8},
             sound = false,
             callback_function = function(obj)
-                obj.TextTool.setValue(group.label)
+                obj.TextTool.setValue(myLabelText)
                 obj.TextTool.setFontColor(groupColor)
             end
         })
@@ -614,12 +749,26 @@ function clearSpawnedDiceObjects()
 end
 
 
+-- Roll the dice expression
+function rollDice(numDice, sides, label)
+    local total = 0
+    local rolls = {}
+
+    for i = 1, numDice do
+        local roll = math.random(1, sides)
+        table.insert(rolls, roll)
+        total = total + roll
+    end
+
+    local rollStr = table.concat(rolls, ", ")
+    broadcastToAll("• Rolled " .. label .. ": [" .. rollStr .. "] = " .. total, {0.8, 1, 0.8})
+    return total
+end
+
 
 
 
 function onLoadRollClicked(obj, playerColor)
-
-
     local matGUID = nil
 
     if playerColor == "Red" then
@@ -637,48 +786,65 @@ function onLoadRollClicked(obj, playerColor)
         return
     end
 
-    local dice = diceGroupsByButtonGUID[obj.getGUID()]
-    diceGroupsByButtonGUID[obj.getGUID()] = {}
-    log(dice)
-    if not dice then
-        printToColor("No dice group linked to this button.", playerColor, {1, 0.5, 0.5})
-        return
+    local oldDice = diceGroupsByButtonGUID[obj.getGUID()]
+    local inheritedColor = stringColorToRGB(playerColor)  -- default fallback
+
+    -- Step 1: Capture color and remove placeholder dice
+    if oldDice and #oldDice > 0 then
+        if oldDice[1] and oldDice[1].getColorTint then
+            inheritedColor = oldDice[1]:getColorTint()
+        end
+        for _, die in ipairs(oldDice) do
+            if die and die.destruct then
+                die:destruct()
+            end
+        end
     end
+    diceGroupsByButtonGUID[obj.getGUID()] = nil
 
-    mat.call("moveDiceToRollerWrapper", {playerColor = playerColor, dice = dice})
-
-    local diceGroup = diceGroupsByButtonGUID[obj.getGUID()]
-    if not diceGroup then
-        broadcastToColor("No dice group found for button!", playerColor, {1, 0.2, 0.2})
-        return
-    end
-
-    -- Try to find nearby 3D text with weapon label
+    -- Step 2: Extract label text
     local labelText = diceDescriptionByButtonGUID[obj.getGUID()]
-
     if not labelText then
         broadcastToColor("Could not find weapon label near button.", playerColor, {1, 0.3, 0.3})
         return
     end
 
-    -- Extract stats
+    -- Step 3: Parse A:# / A:d# / A:#d# format
+    local diceExpr = labelText:match("A:([^%s]+)")
+    local numDice, sides = parseDiceExpression((diceExpr or "1"))
+    local totalAttacks = rollDice(numDice, sides, diceExpr)
 
+    -- Step 4: Spawn dice with inherited color
+    local spawned = {}
+    for i = 1, totalAttacks do
+        local die = spawnObject({
+            type = "Die_6_Rounded",
+            position = {0, 3 + i * 0.2, 0},
+            rotation = {0, math.random() * 360, 0},
+            scale = {1, 1, 1},
+            callback_function = function(obj)
+                obj:setColorTint(inheritedColor)
+            end
+        })
+        table.insert(spawned, die)
+    end
 
-    -- Map to correct UI object for this player
+    -- Step 5: Move dice to the roller
+    mat.call("moveDiceToRollerWrapper", {
+        playerColor = playerColor,
+        dice = spawned
+    })
 
-    local redRollerUI = getObjectFromGUID(redRollerGUID)
-
-    local uiObj = redRollerUI
-
-
+    -- Step 6: Apply weapon UI
+    local uiObj = getObjectFromGUID((playerColor == "Red") and redRollerGUID or blueRollerGUID)
     if not uiObj then
         broadcastToColor("⚠️ No UI panel for color: " .. playerColor, playerColor, {1, 0.5, 0.5})
         return
     end
 
     uiObj.call("applyWeaponLabel", labelText)
-
 end
+
 
 
 
@@ -1125,9 +1291,9 @@ function previewTargeting(playerColor)
 
     for source, weapons in pairs(weaponMap) do
         for _, weapon in ipairs(weapons) do
-            local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
-                          " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
-                          ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
+            local label = formatWeaponLabel(weapon)
+            log(weapon)
+            log(label)
             local rangeInches = tonumber(weapon.range)
             if rangeInches then  
 
@@ -1192,6 +1358,8 @@ function onScriptingButtonDown(index, playerColor)
 
         local guid = hoverObj.getGUID()
 
+
+        local uuid = getUUIDFromTags(hoverObj)
         -- Toggle individual source models during preview
         if targetingState.previewing then
             local found = false
@@ -1206,7 +1374,6 @@ function onScriptingButtonDown(index, playerColor)
             end
 
             if not found then
-                local uuid = getUUIDFromTags(hoverObj)
                 if uuid == targetingState.sourceGUID then
                     table.insert(targetingState.sourceUnit, hoverObj)
                     hoverObj.highlightOn({0,1,0})
@@ -1219,17 +1386,7 @@ function onScriptingButtonDown(index, playerColor)
             targetingState.confirmed = false
             targetingState.previewing = false
             previewTargeting(playerColor)  -- regenerate preview
-            return
-        end
-
-        local uuid = getUUIDFromTags(hoverObj)
-        if not uuid then
-            broadcastToColor("Hovered model has no UUID tag.", playerColor, {1,0.5,0.5})
-            drawBoundingBox(hoverObj, {0, 1, 0})
-            return
-        end
-
-        if not targetingState.sourceGUID then
+        elseif not targetingState.sourceGUID then
             targetingState.sourceGUID = uuid
             targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
             broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
@@ -1242,8 +1399,6 @@ function onScriptingButtonDown(index, playerColor)
             targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
             broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
             previewTargeting(playerColor)
-
-            return
         end
 
         if targetingState.sourceUnit then
@@ -1322,7 +1477,6 @@ function onObjectSpawn(obj)
 
         local script = obj.getLuaScript()
         if not script or #script < 50 then
-            log("Spawned object has no meaningful script: " .. obj.getGUID())
             return
         end
 
@@ -1347,7 +1501,6 @@ function onObjectSpawn(obj)
             if not model.getVar("unitUUID") then
                 model.setVar("unitUUID", uuid)
                 model.use_hands = false
-                log("Set unitUUID on model " .. model.getGUID() .. " -> " .. uuid)
             end
         end
     end, 20)
