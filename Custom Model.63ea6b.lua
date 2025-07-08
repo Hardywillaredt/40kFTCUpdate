@@ -12,14 +12,16 @@ handlersInitialized = false
 local inputVars = {
     "bs", "s", "ap", "d", "hit_mod",
     "sustained_hits", "crit_hit", "wound_mod",
-    "anti_vehicle", "anti_monster", "anti_infantry",
+    "anti_val",  -- was anti_vehicle, anti_monster, anti_infantry
     "t"
 }
 
 local toggleVars = {
     "lethal_hits", "reroll_all", "reroll_1s",
-    "devastating_wounds"
+    "devastating_wounds",
+    "anti_active"  -- new toggle for whether target has matching keyword
 }
+
 
 -- Final Action
 function onRollPressed(obj, color)
@@ -200,12 +202,12 @@ function addFullPhysicalUI(obj)
 
     row("Wound Phase", {
         {label = "Wound Mod", var = "wound_mod"},
-        {label = "Anti-Vehicle", var = "anti_vehicle"},
-        {label = "Anti-Monster", var = "anti_monster"},
-        {label = "Anti-Infantry", var = "anti_infantry"}
+        {label = "Anti-X", var = "anti_val"}
     }, {
+        {label = "Anti Active", var = "anti_active"},
         {label = "Devastating", var = "devastating_wounds"}
     })
+    
 
     row("Defense", {
         {label = "Tough", var = "t"}

@@ -57,6 +57,10 @@ secondary12CardZone_GUID = "d865d4"
 secondary21CardZone_GUID = "3c8d71"
 secondary22CardZone_GUID = "88cac4"
 
+redRollerGUID = "63ea6b"
+
+
+
 CPMissionBook_GUID = "731ec4"
 
 -- Globals to track targeting state
@@ -73,6 +77,12 @@ allVectorLines = {}  -- used by setVectorLines()
 
 bbVectorLines = {}
 
+
+-- Global storage for tracking dice groups and buttons
+spawnedDiceObjects = {}
+diceGroupButtons = {}
+diceGroupsByButtonGUID = {}
+diceDescriptionByButtonGUID = {}
 
 
 
@@ -372,6 +382,9 @@ function parseWeaponsByModel(objects, requestedType)
                     end
                 end
 
+                log("abilities")
+                log(abilities)
+
                 result[obj] = result[obj] or {}
                 table.insert(result[obj], {
                     name = name,
@@ -424,10 +437,7 @@ end
 
 
 
--- Global storage for tracking dice groups and buttons
-spawnedDiceObjects = {}
-diceGroupButtons = {}
-diceGroupsByButtonGUID = {}
+
 
 function spawnWeaponDice(playerColor, grouped)
     clearSpawnedDiceObjects()
@@ -466,7 +476,7 @@ function spawnWeaponDice(playerColor, grouped)
         -- Weapon label = row 0
         local labelPos = {
             x = origin.x + groupOffsetX + 2 * spacing * dx,
-            y = origin.y + 2.5,
+            y = origin.y + 4,
             z = origin.z + 0 * spacing * dz,
         }
 
@@ -539,6 +549,7 @@ function spawnWeaponDice(playerColor, grouped)
                 })
 
                 diceGroupsByButtonGUID[obj.getGUID()] = groupDice
+                diceDescriptionByButtonGUID[obj.getGUID()] = group.label
             end
         })
 
@@ -599,11 +610,16 @@ function clearSpawnedDiceObjects()
     spawnedDiceObjects = {}
     diceGroupsByButtonGUID = {}
     diceGroupButtons = {}
+    diceDescriptionByButtonGUID = {}
 end
 
 
 
+
+
 function onLoadRollClicked(obj, playerColor)
+
+
     local matGUID = nil
 
     if playerColor == "Red" then
@@ -630,7 +646,40 @@ function onLoadRollClicked(obj, playerColor)
     end
 
     mat.call("moveDiceToRollerWrapper", {playerColor = playerColor, dice = dice})
+
+    local diceGroup = diceGroupsByButtonGUID[obj.getGUID()]
+    if not diceGroup then
+        broadcastToColor("No dice group found for button!", playerColor, {1, 0.2, 0.2})
+        return
+    end
+
+    -- Try to find nearby 3D text with weapon label
+    local labelText = diceDescriptionByButtonGUID[obj.getGUID()]
+
+    if not labelText then
+        broadcastToColor("Could not find weapon label near button.", playerColor, {1, 0.3, 0.3})
+        return
+    end
+
+    -- Extract stats
+
+
+    -- Map to correct UI object for this player
+
+    local redRollerUI = getObjectFromGUID(redRollerGUID)
+
+    local uiObj = redRollerUI
+
+
+    if not uiObj then
+        broadcastToColor("⚠️ No UI panel for color: " .. playerColor, playerColor, {1, 0.5, 0.5})
+        return
+    end
+
+    uiObj.call("applyWeaponLabel", labelText)
+
 end
+
 
 
 
