@@ -1058,14 +1058,47 @@ function startHeightAdjustLoop(playerColor, index)
 end
 
 -- Override scripting button down (B = 1, C = 2, K = 3)
+-- Override scripting button down (B = 1, C = 2, K = 3)
+-- Override scripting button down (B = 1, C = 2, K = 3)
 function onScriptingButtonDown(index, playerColor)
     heldButtons[playerColor] = heldButtons[playerColor] or {}
 
-    if index == 7 then  -- 'O' key → Toggle source/target designation
-        bbVectorLines = {}
+    if index == 7 then  -- 'O' key
         local hoverObj = Player[playerColor].getHoverObject()
         if not hoverObj then
             broadcastToColor("No object under pointer.", playerColor, {1,0.5,0.5})
+            return
+        end
+
+        local guid = hoverObj.getGUID()
+
+        -- Toggle individual source models during preview
+        if targetingState.previewing then
+            local found = false
+            for i = #targetingState.sourceUnit, 1, -1 do
+                if targetingState.sourceUnit[i].getGUID() == guid then
+                    targetingState.sourceUnit[i].highlightOff()
+                    table.remove(targetingState.sourceUnit, i)
+                    found = true
+                    broadcastToColor("Source model removed from selection.", playerColor, {1, 0.5, 0.5})
+                    break
+                end
+            end
+
+            if not found then
+                local uuid = getUUIDFromTags(hoverObj)
+                if uuid == targetingState.sourceGUID then
+                    table.insert(targetingState.sourceUnit, hoverObj)
+                    hoverObj.highlightOn({0,1,0})
+                    broadcastToColor("Source model added back to selection.", playerColor, {0.5, 1, 0.5})
+                end
+            end
+
+            Global.setVectorLines({})
+            clearSpawnedDiceObjects()
+            targetingState.confirmed = false
+            targetingState.previewing = false
+            onScriptingButtonDown(8, playerColor)  -- regenerate preview
             return
         end
 
@@ -1081,46 +1114,37 @@ function onScriptingButtonDown(index, playerColor)
             targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
             broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
         elseif not targetingState.targetGUID then
+            if uuid == targetingState.sourceGUID then
+                broadcastToColor("Cannot select the same unit as both source and target.", playerColor, {1,0.5,0.5})
+                return
+            end
             targetingState.targetGUID = uuid
             targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
             broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
-        else
-            broadcastToColor("Source and target already selected. Press confirm (8) to resolve or reset.", playerColor, {1,1,0})
+            onScriptingButtonDown(8, playerColor)  -- immediately trigger preview
+            return
         end
 
         if targetingState.sourceUnit then
-            for _, obj in ipairs(targetingState.sourceUnit) do 
-                obj.highlightOn({0,1,0}) 
+            for _, obj in ipairs(targetingState.sourceUnit) do
+                obj.highlightOn({0,1,0})
                 drawBoundingBox(obj, {0, 1, 0})
             end
         end
 
         if targetingState.targetUnit then
-            for _, obj in ipairs(targetingState.targetUnit) do 
-                obj.highlightOn({1,0,0}) 
+            for _, obj in ipairs(targetingState.targetUnit) do
+                obj.highlightOn({1,0,0})
                 drawBoundingBox(obj, {1, 0, 0})
             end
         end
-        
 
-    elseif index == 8 then  -- 'Confirm' key
-        if targetingState.confirmed then
-            -- Nothing to confirm: clear everything
-            for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
-            for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
-            Global.setVectorLines({})
-            clearSpawnedDiceObjects()
-            resetTargetingState()
-            broadcastToColor("targetting cleared", playerColor, {0.8,0.8,0.8})
-    
-        elseif targetingState.sourceUnit and targetingState.targetUnit then
-            -- FIRST PRESS: Confirm targeting
-            log("targeting")
-            Global.setVectorLines({})
+    elseif index == 8 then  -- Confirm
+        if targetingState.sourceUnit and targetingState.targetUnit then
             local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
             local groupedByLabel = {}
             local allVectorLines = {}
-    
+
             for source, weapons in pairs(weaponMap) do
                 for _, weapon in ipairs(weapons) do
                     local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
@@ -1128,7 +1152,7 @@ function onScriptingButtonDown(index, playerColor)
                                   ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
                     local rangeInches = tonumber(weapon.range)
                     if not rangeInches then ::continue:: end
-    
+
                     local sourcePos = source.getPosition()
                     local closestTarget = nil
                     local closestDist = math.huge
@@ -1148,7 +1172,7 @@ function onScriptingButtonDown(index, playerColor)
                         }
                         groupedByLabel[label].count = groupedByLabel[label].count + 1
                         table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
-    
+
                         local tgt = closestTarget.getPosition()
                         local mid = {
                             (sourcePos.x + tgt.x) / 2,
@@ -1157,7 +1181,7 @@ function onScriptingButtonDown(index, playerColor)
                         }
                         local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
                         local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
-    
+
                         table.insert(allVectorLines, {
                             color = groupedByLabel[label].color,
                             points = {srcRaise, mid, tgtRaise},
@@ -1167,13 +1191,18 @@ function onScriptingButtonDown(index, playerColor)
                     ::continue::
                 end
             end
-    
+
             Global.setVectorLines(allVectorLines)
             spawnWeaponDice(playerColor, groupedByLabel)
-            targetingState.confirmed = true  -- ✅ mark as confirmed
-    
+            targetingState.confirmed = true
+            targetingState.previewing = true
+            broadcastToColor("Previewing targeting: press 7 to add/remove source models, or 8 to confirm.", playerColor, {1,1,0})
+
+        elseif targetingState.previewing then
+            broadcastToColor("Targeting finalized.", playerColor, {0.5, 1, 0.5})
+            targetingState.previewing = false
+
         elseif currentHeightMarker.pos and currentHeightMarker.height then
-            -- Apply height
             local selected = Player[playerColor].getSelectedObjects()
             if #selected == 0 then
                 broadcastToColor("No models selected to apply height to.", playerColor, {1, 0.5, 0.5})
@@ -1187,9 +1216,8 @@ function onScriptingButtonDown(index, playerColor)
             Global.setVectorLines({})
             currentHeightMarker = {pos = nil, height = nil}
             broadcastToColor("Applied height to " .. updated .. " model(s).", playerColor, {0, 1, 0})
-    
+
         else
-            -- Nothing to confirm: clear everything
             for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
             for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
             Global.setVectorLines({})
@@ -1199,11 +1227,12 @@ function onScriptingButtonDown(index, playerColor)
             broadcastToColor("Cleared selection and height marker.", playerColor, {0.8,0.8,0.8})
         end
 
-    elseif index == 9 or index == 10 then  -- U/I keys
+    elseif index == 9 or index == 10 then
         heldButtons[playerColor][index] = true
         startHeightAdjustLoop(playerColor, index)
     end
 end
+
 
 
 
