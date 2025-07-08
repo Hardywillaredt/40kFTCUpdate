@@ -318,6 +318,7 @@ function SelectDeleteDiceX(action, n, selectOthers, lowUp, color)
 end
 
 function moveDiceToRollerWrapper(args)
+    clearDiceX(6, true, args.playerColor)
     moveDiceToRoller(args.playerColor, args.dice)
 end
 

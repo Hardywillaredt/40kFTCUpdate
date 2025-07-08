@@ -59,6 +59,21 @@ secondary22CardZone_GUID = "88cac4"
 
 CPMissionBook_GUID = "731ec4"
 
+-- Globals to track targeting state
+targetingState = {
+    sourceGUID = nil,
+    sourceUnit = nil,
+    targetGUID = nil,
+    targetUnit = nil,
+    colorMap = {},  -- label -> RGB
+    confirmed = false
+}
+
+allVectorLines = {}  -- used by setVectorLines()
+
+bbVectorLines = {}
+
+
 --[[
 GUID reference for primary / mission / deployment cards
 Yeah, I could use variables but I didn't, oh well
@@ -537,16 +552,28 @@ function spawnWeaponDice(playerColor, grouped)
 end
 
 
-
+function resetTargetingState()
+    targetingState.sourceGUID = nil
+    targetingState.sourceUnit = nil
+    targetingState.targetGUID = nil
+    targetingState.targetUnit = nil
+    targetingState.colorMap = {}
+    targetingState.confirmed = false
+end
 
 function clearSpawnedDiceObjects()
     for _, obj in ipairs(spawnedDiceObjects) do
-        if obj and obj.destruct then obj.destruct() end
+        local ok, isValid = pcall(function() return obj and obj.is_valid end)
+        if ok and isValid then
+            pcall(function() obj.destruct() end)
+        end
     end
+
     spawnedDiceObjects = {}
     diceGroupsByButtonGUID = {}
     diceGroupButtons = {}
 end
+
 
 function onLoadRollClicked(obj, playerColor)
     local matGUID = nil
@@ -597,16 +624,6 @@ end
 
 -- Hotkey targeting system for attack eligibility with visual aid
 
--- Globals to track targeting state
-local targetingState = {
-    sourceGUID = nil,
-    sourceUnit = {},
-    targetGUID = nil,
-    targetUnit = {},
-    colorMap = {}  -- label -> RGB
-}
-
-local allVectorLines = {}  -- used by setVectorLines()
 
 
 -- Helper: extract uuid from an object's tags
@@ -698,7 +715,7 @@ function getBoundingBoxCorners(obj)
 
     return corners
 end
-debugVectorLines = {}
+
 function drawBoundingBox(obj, color)
     local c = color or {1, 1, 0}
     local corners = getBoundingBoxCorners(obj)
@@ -714,7 +731,7 @@ function drawBoundingBox(obj, color)
     for _, pair in ipairs(lines) do
         local p1 = corners[pair[1]]
         local p2 = corners[pair[2]]
-        table.insert(debugVectorLines, {
+        table.insert(bbVectorLines, {
             color = c,
             points = {
                 {p1.x, p1.y, p1.z},
@@ -724,7 +741,7 @@ function drawBoundingBox(obj, color)
         })
     end
 
-    Global.setVectorLines(debugVectorLines)
+    Global.setVectorLines(bbVectorLines)
 end
 
 
@@ -998,7 +1015,7 @@ end
 heldButtons = {}
 
 function startHeightAdjustLoop(playerColor, index)
-    local delta = (index == 8) and 0.05 or -0.05  -- U raises, I lowers
+    local delta = (index == 9) and 0.05 or -0.05  -- U raises, I lowers
 
     Wait.time(function()
         -- Stop if button no longer held
@@ -1025,9 +1042,10 @@ end
 
 -- Override scripting button down (B = 1, C = 2, K = 3)
 function onScriptingButtonDown(index, playerColor)
-    if index == 1 then  -- 'B' key pressed
-        log(playerColor .. " pressed Button 1 (Select unit)")
+    heldButtons[playerColor] = heldButtons[playerColor] or {}
 
+    if index == 7 then  -- 'O' key → Toggle source/target designation
+        bbVectorLines = {}
         local hoverObj = Player[playerColor].getHoverObject()
         if not hoverObj then
             broadcastToColor("No object under pointer.", playerColor, {1,0.5,0.5})
@@ -1044,137 +1062,231 @@ function onScriptingButtonDown(index, playerColor)
         if not targetingState.sourceGUID then
             targetingState.sourceGUID = uuid
             targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
+            broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
+        elseif not targetingState.targetGUID then
+            targetingState.targetGUID = uuid
+            targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
+            broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
+        else
+            broadcastToColor("Source and target already selected. Press confirm (8) to resolve or reset.", playerColor, {1,1,0})
+        end
+
+        if targetingState.sourceUnit then
             for _, obj in ipairs(targetingState.sourceUnit) do 
                 obj.highlightOn({0,1,0}) 
                 drawBoundingBox(obj, {0, 1, 0})
             end
-            broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
-        else
-            targetingState.targetGUID = uuid
-            targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
+        end
+
+        if targetingState.targetUnit then
             for _, obj in ipairs(targetingState.targetUnit) do 
                 obj.highlightOn({1,0,0}) 
                 drawBoundingBox(obj, {1, 0, 0})
             end
-            broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
         end
+        
 
-    elseif index == 2 then  -- 'C' key pressed to confirm fire
-        log(playerColor .. " pressed Button 2 (Confirm)")
-
-        if not targetingState.sourceUnit or not targetingState.targetUnit then
-            broadcastToColor("Select source and target units first.", playerColor, {1,1,0})
-            return
-        end
-
-        -- Clear prior vector lines
-        Global.setVectorLines({})
-
-        local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
-        local groupedByLabel = {}
-        local allVectorLines = {}
-
-        for source, weapons in pairs(weaponMap) do
-            for _, weapon in ipairs(weapons) do
-                local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
-                              " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
-                              ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
-
-                local rangeInches = tonumber(weapon.range)
-                if not rangeInches then ::continue:: end
-
-                local sourcePos = source.getPosition()
-                local closestTarget = nil
-                local closestDist = math.huge
-
-                for _, target in ipairs(targetingState.targetUnit) do
-                    local dist = getModelDistance(source, target)
-                    if dist < closestDist and dist <= rangeInches then
-                        closestTarget = target
-                        closestDist = dist
-                    end
-                end
-
-                if closestTarget then
-                    groupedByLabel[label] = groupedByLabel[label] or {
-                        label = label,
-                        color = colorFromLabel(label, playerColor),
-                        count = 0,
-                        instances = {}
-                    }
-                    groupedByLabel[label].count = groupedByLabel[label].count + 1
-                    table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
-
-                    local tgt = closestTarget.getPosition()
-                    local mid = {
-                        (sourcePos.x + tgt.x) / 2,
-                        math.max(sourcePos.y, tgt.y) + 0.3 + 0.2 * groupedByLabel[label].count,
-                        (sourcePos.z + tgt.z) / 2
-                    }
-
-                    local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
-                    local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
-
-                    table.insert(allVectorLines, {
-                        color = groupedByLabel[label].color,
-                        points = {srcRaise, mid, tgtRaise},
-                        thickness = 0.05
-                    })
-                end
-
-                ::continue::
-            end
-        end
-
-        Global.setVectorLines(allVectorLines)
-        spawnWeaponDice(playerColor, groupedByLabel)
-
-    elseif index == 3 then  -- 'K' key to clear
-        log(playerColor .. " pressed Button 3 (Clear)")
-
-        for _, obj in ipairs(targetingState.sourceUnit) do obj.highlightOff() end
-        for _, obj in ipairs(targetingState.targetUnit) do obj.highlightOff() end
-        Global.setVectorLines({})
-        targetingState = {
-            sourceUnit = {}, targetUnit = {}, sourceGUID = nil, targetGUID = nil,
-            drawHandles = {}, colorMap = {}
-        }
-        broadcastToColor("Cleared target/source selection.", playerColor, {0.8,0.8,0.8})
+    elseif index == 8 then  -- 'Confirm' key
+        if targetingState.confirmed then
+            -- SECOND PRESS: Clear targeting + visuals
+            for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
+            for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
     
+            Global.setVectorLines({})
+            clearSpawnedDiceObjects()
+    
+            targetingState = {
+                sourceUnit = nil, targetUnit = nil, sourceGUID = nil, targetGUID = nil,
+                drawHandles = {}, colorMap = {}, confirmed = false
+            }
+            broadcastToColor("Targeting cleared.", playerColor, {0.8, 0.8, 0.8})
+    
+        elseif targetingState.sourceUnit and targetingState.targetUnit then
+            -- FIRST PRESS: Confirm targeting
+            log("targeting")
+            Global.setVectorLines({})
+            local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
+            local groupedByLabel = {}
+            local allVectorLines = {}
+    
+            for source, weapons in pairs(weaponMap) do
+                for _, weapon in ipairs(weapons) do
+                    local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
+                                  " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
+                                  ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
+                    local rangeInches = tonumber(weapon.range)
+                    if not rangeInches then ::continue:: end
+    
+                    local sourcePos = source.getPosition()
+                    local closestTarget = nil
+                    local closestDist = math.huge
+                    for _, target in ipairs(targetingState.targetUnit) do
+                        local dist = getModelDistance(source, target)
+                        if dist < closestDist and dist <= rangeInches then
+                            closestTarget = target
+                            closestDist = dist
+                        end
+                    end
+                    if closestTarget then
+                        groupedByLabel[label] = groupedByLabel[label] or {
+                            label = label,
+                            color = colorFromLabel(label, playerColor),
+                            count = 0,
+                            instances = {}
+                        }
+                        groupedByLabel[label].count = groupedByLabel[label].count + 1
+                        table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
+    
+                        local tgt = closestTarget.getPosition()
+                        local mid = {
+                            (sourcePos.x + tgt.x) / 2,
+                            math.max(sourcePos.y, tgt.y) + 0.3 + 0.2 * groupedByLabel[label].count,
+                            (sourcePos.z + tgt.z) / 2
+                        }
+                        local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
+                        local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
+    
+                        table.insert(allVectorLines, {
+                            color = groupedByLabel[label].color,
+                            points = {srcRaise, mid, tgtRaise},
+                            thickness = 0.05
+                        })
+                    end
+                    ::continue::
+                end
+            end
+    
+            Global.setVectorLines(allVectorLines)
+            spawnWeaponDice(playerColor, groupedByLabel)
+            targetingState.confirmed = true  -- ✅ mark as confirmed
+    
+        elseif currentHeightMarker.pos and currentHeightMarker.height then
+            -- Apply height
+            local selected = Player[playerColor].getSelectedObjects()
+            if #selected == 0 then
+                broadcastToColor("No models selected to apply height to.", playerColor, {1, 0.5, 0.5})
+                return
+            end
+            local updated = 0
+            for _, obj in ipairs(selected) do
+                bakeLOSCorners(obj, currentHeightMarker.height)
+                updated = updated + 1
+            end
+            Global.setVectorLines({})
+            currentHeightMarker = {pos = nil, height = nil}
+            broadcastToColor("Applied height to " .. updated .. " model(s).", playerColor, {0, 1, 0})
+    
+        else
+            -- Nothing to confirm: clear everything
+            for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
+            for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
+            Global.setVectorLines({})
+            clearSpawnedDiceObjects()
+            resetTargetingState()
+            currentHeightMarker = {pos = nil, height = nil}
+            broadcastToColor("Cleared selection and height marker.", playerColor, {0.8,0.8,0.8})
+        end
+    
+        if targetingState.sourceUnit and targetingState.targetUnit then
+            log("targetting")
+            -- Confirm ranged attack
+            Global.setVectorLines({})
 
+            local weaponMap = parseWeaponsByModel(targetingState.sourceUnit, "Ranged")
+            local groupedByLabel = {}
+            local allVectorLines = {}
 
-    -- O key – Apply current marker height to selected models
-    elseif index == 7 then
-        if not currentHeightMarker.pos or not currentHeightMarker.height then
-            broadcastToColor("No height marker set.", playerColor, {1, 0.5, 0.5})
-            return
+            for source, weapons in pairs(weaponMap) do
+                for _, weapon in ipairs(weapons) do
+                    local label = weapon.name .. "\nA:" .. weapon.a .. " BS:" .. (weapon.hit or "-") ..
+                                  " S:" .. weapon.s .. " AP:" .. weapon.ap .. " D:" .. weapon.d ..
+                                  ((weapon.abilities ~= "") and "\n[" .. weapon.abilities .. "]" or "")
+
+                    local rangeInches = tonumber(weapon.range)
+                    if not rangeInches then ::continue:: end
+
+                    local sourcePos = source.getPosition()
+                    local closestTarget = nil
+                    local closestDist = math.huge
+
+                    for _, target in ipairs(targetingState.targetUnit) do
+                        local dist = getModelDistance(source, target)
+                        if dist < closestDist and dist <= rangeInches then
+                            closestTarget = target
+                            closestDist = dist
+                        end
+                    end
+
+                    if closestTarget then
+                        groupedByLabel[label] = groupedByLabel[label] or {
+                            label = label,
+                            color = colorFromLabel(label, playerColor),
+                            count = 0,
+                            instances = {}
+                        }
+                        groupedByLabel[label].count = groupedByLabel[label].count + 1
+                        table.insert(groupedByLabel[label].instances, {source = source, target = closestTarget})
+
+                        local tgt = closestTarget.getPosition()
+                        local mid = {
+                            (sourcePos.x + tgt.x) / 2,
+                            math.max(sourcePos.y, tgt.y) + 0.3 + 0.2 * groupedByLabel[label].count,
+                            (sourcePos.z + tgt.z) / 2
+                        }
+
+                        local srcRaise = {sourcePos.x, sourcePos.y + 0.3 + 0.2 * groupedByLabel[label].count, sourcePos.z}
+                        local tgtRaise = {tgt.x, tgt.y + 0.3 + 0.2 * groupedByLabel[label].count, tgt.z}
+
+                        table.insert(allVectorLines, {
+                            color = groupedByLabel[label].color,
+                            points = {srcRaise, mid, tgtRaise},
+                            thickness = 0.05
+                        })
+                    end
+                    ::continue::
+                end
+            end
+
+            Global.setVectorLines(allVectorLines)
+            spawnWeaponDice(playerColor, groupedByLabel)
+
+        elseif currentHeightMarker.pos and currentHeightMarker.height then
+            -- Confirm height application
+            local selected = Player[playerColor].getSelectedObjects()
+            if #selected == 0 then
+                broadcastToColor("No models selected to apply height to.", playerColor, {1, 0.5, 0.5})
+                return
+            end
+
+            local updated = 0
+            for _, obj in ipairs(selected) do
+                bakeLOSCorners(obj, currentHeightMarker.height)
+                updated = updated + 1
+            end
+
+            Global.setVectorLines({})
+            currentHeightMarker = {pos = nil, height = nil}
+            broadcastToColor("Applied height to " .. updated .. " selected model(s).", playerColor, {0, 1, 0})
+
+        else
+            -- Reset all
+            for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
+            for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
+            Global.setVectorLines({})
+            targetingState = {
+                sourceUnit = nil, targetUnit = nil, sourceGUID = nil, targetGUID = nil,
+                drawHandles = {}, colorMap = {}
+            }
+            currentHeightMarker = {pos = nil, height = nil}
+            broadcastToColor("Cleared target/source selection and marker.", playerColor, {0.8,0.8,0.8})
         end
 
-        local selected = Player[playerColor].getSelectedObjects()
-        if #selected == 0 then
-            broadcastToColor("No models selected to apply height to.", playerColor, {1, 0.5, 0.5})
-            return
-        end
-
-        local updated = 0
-        for _, obj in ipairs(selected) do
-            bakeLOSCorners(obj, currentHeightMarker.height)
-            updated = updated + 1
-        end
-
-        Global.setVectorLines({})
-        currentHeightMarker = {pos = nil, height = nil}
-        broadcastToColor("Applied height to " .. updated .. " selected model(s).", playerColor, {0, 1, 0})
-
-    elseif index == 8 or index == 9 then  -- U/I keys
-        heldButtons[playerColor] = heldButtons[playerColor] or {}
+    elseif index == 9 or index == 10 then  -- U/I keys
         heldButtons[playerColor][index] = true
-
-        -- Start hold loop
         startHeightAdjustLoop(playerColor, index)
     end
-
 end
+
 
 
 function onScriptingButtonUp(index, playerColor)

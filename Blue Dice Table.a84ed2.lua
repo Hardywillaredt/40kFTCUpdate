@@ -318,6 +318,7 @@ function SelectDeleteDiceX(action, n, selectOthers, lowUp, color)
 end
 
 function moveDiceToRollerWrapper(args)
+    clearDiceX(6, true, args.playerColor)
     moveDiceToRoller(args.playerColor, args.dice)
 end
 
@@ -329,6 +330,7 @@ function moveDiceToRoller(color, dice)
         roller.putObject(die)
     end
 end
+
 
 function clearDiceAll(obj, color, alt)
     if not alt then printToColor("Use right click!", color, "Orange") return end
