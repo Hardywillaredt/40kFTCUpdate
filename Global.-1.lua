@@ -67,11 +67,13 @@ CPMissionBook_GUID = "731ec4"
 targetingState = {
     sourceGUID = nil,
     sourceUnit = nil,
-    targetGUID = nil,
-    targetUnit = nil,
-    colorMap = {},  -- label -> RGB
-    confirmed = false
+    targetGUIDs = {},             -- ordered list of selected target UUIDs
+    targetUnits = {},             -- map: uuid -> list of models
+    colorMap = {},                -- label -> RGB
+    confirmed = false,
+    previewing = false
 }
+
 
 allVectorLines = {}  -- used by setVectorLines()
 
@@ -345,36 +347,165 @@ function weaponToLabel(weapon)
     return weapon.name .. "\n" .. statLine .. abilityStr
 end
 
+function buildWeaponAssignmentGraph(sourceUnit, targetUnits)
+    local targetNodes = {}
+    local targetUUIDToModels = {}
+
+    -- Build targetNodes: group models by unit UUID
+    for _, targetObj in ipairs(targetUnits) do
+        local uuid = getUUIDFromTags(targetObj)
+        if uuid then
+            targetUUIDToModels[uuid] = targetUUIDToModels[uuid] or {}
+            table.insert(targetUUIDToModels[uuid], targetObj)
+        end
+    end
+
+    for uuid, models in pairs(targetUUIDToModels) do
+        targetNodes[uuid] = { guid = uuid, models = models }
+    end
+
+    -- Flatten all weapons across source models
+    local rawWeapons = {}
+    for _, model in ipairs(sourceUnit) do
+        local weaponList = parseWeaponsByModel({model})[model] or {}
+        for _, weapon in ipairs(weaponList) do
+            table.insert(rawWeapons, { model = model, weapon = weapon })
+        end
+    end
+
+    -- Group weapons by profile + valid target set
+    local weaponGroups = {}
+
+    for _, entry in ipairs(rawWeapons) do
+        local model = entry.model
+        local w = entry.weapon
+        local validTargetUUIDs = {}
+
+        for targetUUID, targetData in pairs(targetNodes) do
+            local minDist = math.huge
+            for _, tgtModel in ipairs(targetData.models) do
+                local dist = getModelDistance(model, tgtModel)
+                if dist < minDist then minDist = dist end
+            end
+
+            if w.range and minDist <= w.range then
+                table.insert(validTargetUUIDs, targetUUID)
+            end
+        end
+
+        table.sort(validTargetUUIDs)
+        local sig = w.name .. "::" .. w.a_n .. "d" .. w.a_s .. "->" .. w.d_n .. "d" .. w.d_s .. "::" .. (w.hit or "-") .. "::" .. table.concat(validTargetUUIDs, "::")
+
+        if not weaponGroups[sig] then
+            weaponGroups[sig] = {
+                weapon = w,
+                models = {},
+                validTargets = validTargetUUIDs,
+                signature = sig
+            }
+        end
+
+        table.insert(weaponGroups[sig].models, model)
+    end
+
+    -- Convert to ordered list
+    local sourceNodes = {}
+    for _, group in pairs(weaponGroups) do
+        table.insert(sourceNodes, group)
+    end
 
 
-local function extractStatBlock(stats)
-    local out = {
-        a_n = 0, a_s = 1, a_mod = 0,  -- attacks: num dice, sides, flat modifier
-        d_n = 1, d_s = 1, d_mod = 0,  -- damage: num dice, sides, flat modifier
+    log("=== Weapon Assignment Graph ===")
+
+    for _, node in ipairs(sourceNodes) do
+        log(string.format(
+            "[SourceNode] %s | Range: %s | Models: %d | Targets: %s",
+            node.weapon.name,
+            tostring(node.weapon.range),
+            #node.models,
+            table.concat(node.validTargets, ", ")
+        ))
+    end
+
+    for uuid, tnode in pairs(targetNodes) do
+        log(string.format("[TargetNode] %s | Models: %d", uuid, #tnode.models))
+    end
+
+    log("===============================")
+
+
+    return {
+        sourceNodes = sourceNodes,
+        targetNodes = targetNodes
+    }
+end
+
+
+
+
+function parseStatBlock(nameLine, statLine)
+    local result = {
+        name = nameLine,
+        a_n = 0, a_s = 1, a_mod = 0,
+        d_n = 1, d_s = 1, d_mod = 0,
         hit = nil,
-        s = 0,
-        ap = 0,
+        s = nil,
+        ap = nil,
+        range = nil,
+        abilities = {}
     }
 
-    for token in stats:gmatch("[^%s]+") do
+    -- Ranged weapon statline: starts with number followed by quote
+    if statLine:match("^%d+%s*\"") then
+        result.range = tonumber(statLine:match("^(%d+)%s*\""))
+    elseif not statLine:match("^A:") then
+        return nil
+    end
+
+    -- Extract bracketed abilities (exclude hex-looking values)
+    for tag in statLine:gmatch("%[(.-)%]") do
+        local clean = tag:match("^%s*(.-)%s*$")
+        if not clean:match("^[%x%-]+$") then  -- Exclude pure hex codes
+            table.insert(result.abilities, clean)
+        end
+    end
+
+    -- Check for TORRENT (case-insensitive)
+    local containsTorrent = statLine:lower():find("torrent") ~= nil
+
+    -- Extract stat tokens (excluding bracketed)
+    for token in statLine:gmatch("[^%s%[%]]+") do
         local key, value = token:match("([A-Z]+):([%-%+%w]+)")
         if key and value then
             if key == "A" then
-                out.a_n, out.a_s, out.a_mod = parseDiceExpression(value)
+                result.a_n, result.a_s, result.a_mod = parseDiceExpression(value)
             elseif key == "BS" or key == "WS" then
-                out.hit = value
+                result.hit = value
             elseif key == "S" then
-                out.s = tonumber(value)
+                result.s = tonumber(value)
             elseif key == "AP" then
-                out.ap = tonumber(value)
+                result.ap = tonumber(value)
             elseif key == "D" then
-                out.d_n, out.d_s, out.d_mod = parseDiceExpression(value)
+                result.d_n, result.d_s, result.d_mod = parseDiceExpression(value)
             end
         end
     end
 
-    return out
+    -- Apply TORRENT rule: set hit = 0
+    if containsTorrent then
+        result.hit = 0
+    end
+
+    -- Only return result if all required stats are present
+    if result.a_n > 0 and result.hit ~= nil and result.s ~= nil and result.ap ~= nil and result.d_n > 0 then
+        return result
+    else
+        return nil
+    end
 end
+
+
+
 
 
 
@@ -389,7 +520,7 @@ function getSelectedDescriptions(color)
     return out
 end
 
-function parseWeaponsByModel(objects, requestedType)
+function parseWeaponsByModel(objects)
     local result = {}
 
     for _, obj in ipairs(objects) do
@@ -401,89 +532,22 @@ function parseWeaponsByModel(objects, requestedType)
             local clean = line:gsub("^%s+", ""):gsub("%s+$", "")
             if clean ~= "" then table.insert(lines, clean) end
         end
-        
 
         local i = 1
-        while i <= #lines do
-            local line = lines[i]
-            local isRanged = line:match("^%d+%s*\"%s*A:[%w/]+")
-            local isMelee = not isRanged and line:match("^A:[%w/]+")
+        while i < #lines do
+            local nameLine = lines[i]
+            local statLine = lines[i + 1]
+            local parsed = parseStatBlock(nameLine, statLine)
 
-            if (isRanged and requestedType == "Ranged") or (isMelee and requestedType == "Melee") then
-                -- Look upward for the weapon name
-                local name = "Unknown"
-                for j = i - 1, 1, -1 do
-                    local prior = lines[j]
-                    if not prior:match("^%d+%s*\"%s*A:%d+") and not prior:match("^A:%d+") then
-                        name = prior
-                        break
-                    end
-                end
-
-
-                local logLines = {}
-
-                table.insert(logLines, "▶️ Parsing weapon")
-                table.insert(logLines, "Name: " .. name)
-                table.insert(logLines, "Stats line: " .. line)
-
-                local stats = extractStatBlock(line)
-                local range = isRanged and line:match("^(%d+)%s*\"") or nil
-
-                -- Find abilities: scan lines between current stat line and next weapon entry
-                local abilities = {}
-
-                local nextWeaponLine = #lines + 1
-                for j = i + 1, #lines do
-                    if lines[j]:match("^%d+%s*\"%s*A:%d+") or lines[j]:match("^A:%d+") then
-                        nextWeaponLine = j - 1
-                        break
-                    end
-                end
-
-                table.insert(logLines, "Next weapon stats at line: " .. lines[nextWeaponLine])
-                table.insert(logLines, "Ability lines:")
-
-                table.insert(logLines, "current I " .. tostring((i)))
-                table.insert(logLines, "next weapon line " .. tostring(nextWeaponLine))
-                for j = i, nextWeaponLine do
-                    local abilityLine = lines[j]
-                    table.insert(logLines, "  • " .. abilityLine)
-                    for tag in abilityLine:gmatch("%[(.-)%]") do
-                        if not tag:match("^[0-9a-fA-F]+$") and tag ~= "-" then
-                            for ability in tag:gmatch("[^,]+") do
-                                table.insert(abilities, ability:match("^%s*(.-)%s*$"))
-                            end
-                        end
-                    end
-                end
-
-                table.insert(logLines, "Parsed abilities: " .. table.concat(abilities, ", "))
-                table.insert(logLines, "-----------------------------")
-
+            if parsed then
                 result[obj] = result[obj] or {}
-                table.insert(result[obj], {
-                    name = name,
-                    a_n = stats.a_n or 1,
-                    a_s = stats.a_s or 1,
-                    a_mod = stats.a_mod or 0,
-                    hit = stats.hit,
-                    s = stats.s or 0,
-                    ap = stats.ap or 0,
-                    d_n = stats.d_n or 1,
-                    d_s = stats.d_s or 1,
-                    d_mod = stats.d_mod or 0,
-                    range = range,
-                    abilities = table.concat(abilities, ", ")
-                })
-                
-
-                
-
-                log(table.concat(logLines, "\n"))
+                parsed.range = parsed.range or nil  -- fallback handled in stat block
+                parsed.abilities = table.concat(parsed.abilities, ", ")
+                table.insert(result[obj], parsed)
+                i = i + 2  -- skip the next line (already consumed)
+            else
+                i = i + 1  -- not a weapon, keep scanning
             end
-
-            i = i + 1
         end
     end
 
@@ -700,23 +764,34 @@ end
 
 
 function resetTargetingState()
+    if targetingState.sourceUnit then
+        for _, obj in ipairs(targetingState.sourceUnit) do
+            obj.highlightOff()
+        end
+    end
 
-    for _, obj in ipairs(targetingState.sourceUnit or {}) do obj.highlightOff() end
-    for _, obj in ipairs(targetingState.targetUnit or {}) do obj.highlightOff() end
+    if targetingState.targetUnits then
+        for _, unitList in pairs(targetingState.targetUnits) do
+            for _, obj in ipairs(unitList) do
+                obj.highlightOff()
+            end
+        end
+    end
 
-    targetingState.sourceGUID = nil
-    targetingState.sourceUnit = nil
-    targetingState.targetGUID = nil
-    targetingState.targetUnit = nil
-    targetingState.colorMap = {}
-    targetingState.confirmed = false
-    targetingState.previewing = false
+    targetingState = {
+        sourceGUID = nil,
+        sourceUnit = nil,
+        targetGUIDs = {},
+        targetUnits = {},
+        colorMap = {},
+        confirmed = false,
+        previewing = false
+    }
 
-    
     Global.setVectorLines({})
     clearSpawnedDiceObjects()
-
 end
+
 
 function clearSpawnedDiceObjects()
     local remaining = {}
@@ -1344,6 +1419,32 @@ function previewTargeting(playerColor)
 end
 
 
+function visualizeWeaponAssignmentGraph(graph, position)
+    local lines = {}
+    for _, node in ipairs(graph.sourceNodes) do
+        table.insert(lines, string.format(
+            "%s [%d models] → %s",
+            node.weapon.name,
+            #node.models,
+            table.concat(node.validTargets, ", ")
+        ))
+    end
+
+    local fullText = table.concat(lines, "\n")
+
+    spawnObject({
+        type = "3DText",
+        position = position or {0, 3, 0},
+        scale = {0.7, 0.7, 0.7},
+        callback_function = function(obj)
+            obj.TextTool.setValue(fullText)
+            obj.TextTool.setFontColor({0.8, 1, 0.8})
+            obj.setName("Weapon Assignment Debug")
+        end
+    })
+end
+
+
 -- Override scripting button down (B = 1, C = 2, K = 3)
 -- Override scripting button down (B = 1, C = 2, K = 3)
 -- Override scripting button down (B = 1, C = 2, K = 3)
@@ -1351,69 +1452,75 @@ function onScriptingButtonDown(index, playerColor)
     heldButtons[playerColor] = heldButtons[playerColor] or {}
     if index == 7 then  -- 'O' key
         local hoverObj = Player[playerColor].getHoverObject()
+    
         if not hoverObj then
-            broadcastToColor("No object under pointer.", playerColor, {1,0.5,0.5})
-            return
-        end
-
-        local guid = hoverObj.getGUID()
-
-
-        local uuid = getUUIDFromTags(hoverObj)
-        -- Toggle individual source models during preview
-        if targetingState.previewing then
-            local found = false
-            for i = #targetingState.sourceUnit, 1, -1 do
-                if targetingState.sourceUnit[i].getGUID() == guid then
-                    targetingState.sourceUnit[i].highlightOff()
-                    table.remove(targetingState.sourceUnit, i)
-                    found = true
-                    broadcastToColor("Source model removed from selection.", playerColor, {1, 0.5, 0.5})
-                    break
+            if targetingState.sourceUnit and next(targetingState.targetUnits or {}) then
+                broadcastToColor("🔍 Finalizing selection. Parsing weapons and building graph...", playerColor, {1, 1, 0})
+                local allTargetModels = {}
+                for _, models in pairs(targetingState.targetUnits) do
+                    for _, m in ipairs(models) do table.insert(allTargetModels, m) end
                 end
-            end
-
-            if not found then
-                if uuid == targetingState.sourceGUID then
-                    table.insert(targetingState.sourceUnit, hoverObj)
-                    hoverObj.highlightOn({0,1,0})
-                    broadcastToColor("Source model added back to selection.", playerColor, {0.5, 1, 0.5})
-                end
-            end
-
-            Global.setVectorLines({})
-            clearSpawnedDiceObjects()
-            targetingState.confirmed = false
-            targetingState.previewing = false
-            previewTargeting(playerColor)  -- regenerate preview
-        elseif not targetingState.sourceGUID then
-            targetingState.sourceGUID = uuid
-            targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
-            broadcastToColor("Source unit selected.", playerColor, {0.5,1,0.5})
-        elseif not targetingState.targetGUID then
-            if uuid == targetingState.sourceGUID then
-                broadcastToColor("Cannot select the same unit as both source and target.", playerColor, {1,0.5,0.5})
+    
+                local graph = buildWeaponAssignmentGraph(targetingState.sourceUnit, allTargetModels)
+                -- Optional: store or visualize it here
+                visualizeWeaponAssignmentGraph(graph, {x=0, y=3, z=0})
+                targetingState.confirmed = true
+                return
+            else
+                broadcastToColor("⚠️ You must select a source and at least one target before confirming.", playerColor, {1, 0.6, 0.6})
                 return
             end
-            targetingState.targetGUID = uuid
-            targetingState.targetUnit = getObjectsWithTag("uuid:" .. uuid)
-            broadcastToColor("Target unit selected.", playerColor, {1,0.4,0.4})
-            previewTargeting(playerColor)
         end
-
+    
+        local guid = hoverObj.getGUID()
+        local uuid = getUUIDFromTags(hoverObj)
+        if not uuid then
+            broadcastToColor("⚠️ Object under pointer has no UUID tag.", playerColor, {1, 0.5, 0.5})
+            return
+        end
+    
+        -- No source selected yet
+        if not targetingState.sourceGUID then
+            targetingState.sourceGUID = uuid
+            targetingState.sourceUnit = getObjectsWithTag("uuid:" .. uuid)
+            broadcastToColor("✅ Source unit selected.", playerColor, {0.5, 1, 0.5})
+        
+        -- Same as source → invalid target
+        elseif uuid == targetingState.sourceGUID then
+            broadcastToColor("⚠️ Cannot target the same unit as the source.", playerColor, {1, 0.5, 0.5})
+            return
+        
+        -- Already a selected target → ignore
+        elseif targetingState.targetUnits and targetingState.targetUnits[uuid] then
+            broadcastToColor("⚠️ Target unit already selected.", playerColor, {1, 0.5, 0.5})
+            return
+    
+        -- New target → add to selection
+        else
+            targetingState.targetGUIDs = targetingState.targetGUIDs or {}
+            targetingState.targetUnits = targetingState.targetUnits or {}
+            targetingState.targetGUIDs[#targetingState.targetGUIDs + 1] = uuid
+            targetingState.targetUnits[uuid] = getObjectsWithTag("uuid:" .. uuid)
+            broadcastToColor("🎯 Added target unit: " .. uuid, playerColor, {1, 0.4, 0.4})
+        end
+    
+        -- Highlight all current selections
         if targetingState.sourceUnit then
             for _, obj in ipairs(targetingState.sourceUnit) do
                 obj.highlightOn({0,1,0})
                 drawBoundingBox(obj, {0, 1, 0})
             end
         end
-
-        if targetingState.targetUnit then
-            for _, obj in ipairs(targetingState.targetUnit) do
-                obj.highlightOn({1,0,0})
-                drawBoundingBox(obj, {1, 0, 0})
+    
+        if targetingState.targetUnits then
+            for _, models in pairs(targetingState.targetUnits) do
+                for _, obj in ipairs(models) do
+                    obj.highlightOn({1, 0, 0})
+                    drawBoundingBox(obj, {1, 0, 0})
+                end
             end
         end
+    
 
     elseif index == 8 then  -- Only clear targeting
         if targetingState.previewing then
