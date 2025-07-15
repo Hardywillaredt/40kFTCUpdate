@@ -355,6 +355,9 @@ function clearDice6(obj, color, alt)
     SelectDeleteDiceX("Del", 6, alt, lowerUpper, color)
 end
 
+function clearAllHelper(playerColor)
+    clearDiceX(6, true, playerColor)
+end
 
 function clearDiceX(n, deleteLower, color)
     local counter={0,0,0,0,0,0}
@@ -390,6 +393,13 @@ function spawnDice10(obj, player, alt)
 end
 function spawnDice25(obj, player, alt)
     spawnDice(25,player)
+end
+
+function spawnDiceHelper(params)
+    local n = params.n or 1
+    local player = params.player or "Red"
+
+    spawnDice(n, player)
 end
 
 function spawnDice(n,player)

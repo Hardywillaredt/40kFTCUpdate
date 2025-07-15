@@ -85,8 +85,16 @@ spawnedDiceObjects = {}
 diceGroupButtons = {}
 diceGroupsByButtonGUID = {}
 diceDescriptionByButtonGUID = {}
+spawnedAssignmentUI = {
+    texts = {},
+    buttons = {}
+}
+buttonsByAssignmentKey = {}
 
 
+
+assignmentMap = {}
+lastBuiltGraph = nil
 
 
 
@@ -262,6 +270,382 @@ redPlayerID = ""
 bluePlayerID = ""
 
 
+
+function spawnAssignmentUIAligned(playerColor, graph)
+    clearAssignmentUI()
+    local grid = PLAYER_GRID_SPAWN[playerColor]
+    if not grid then
+        printToAll("No UI grid for color: " .. playerColor, {1, 0, 0})
+        return
+    end
+
+    local origin = grid.origin
+    local dx = grid.xDir
+    local dz = grid.zDir
+    local spacing = 1.8
+    local offsetX = 0
+
+    lastBuiltGraph = graph
+    assignmentMap = {}
+
+
+    local function wrapText(text, maxLen)
+        local out = ""
+        local lineLen = 0
+        for word in text:gmatch("%S+") do
+            if lineLen + #word > maxLen then
+                out = out .. "\n"
+                lineLen = 0
+            end
+            out = out .. word .. " "
+            lineLen = lineLen + #word + 1
+        end
+    
+        return (out:gsub("^%s+", ""):gsub("%s+$", ""))  -- Safe trim
+    end
+    
+
+    for _, source in ipairs(graph.sourceNodes) do
+        if not source.validTargets or #source.validTargets == 0 then 
+        else
+            buttonsByAssignmentKey[source.signature] = buttonsByAssignmentKey[source.signature] or {}
+            local label = string.format(
+                "%s [%d]\nA:%d BS:%s S:%d AP:%d D:%d",
+                source.weapon.name,
+                #source.models,
+                source.weapon.a_n or 1,
+                source.weapon.hit or "-",
+                source.weapon.s or 0,
+                source.weapon.ap or 0,
+                source.weapon.d_n or 1
+            )
+
+            label = wrapText(label, 20)
+
+            local labelPos = {
+                x = origin.x + offsetX + 2 * spacing * dx,
+                y = origin.y + 3,
+                z = origin.z + 0 * spacing * dz
+            }
+
+            -- spawn 3DText
+            local textObj = spawnObject({
+                type = "3DText",
+                position = labelPos,
+                rotation = {
+                    0,
+                    (playerColor == "Red") and 180 or 0,
+                    0
+                },
+                scale = {0.7, 0.7, 0.7},
+                sound = false,
+                callback_function = function(obj)
+                    obj.TextTool.setValue(label)
+                    obj.TextTool.setFontColor({0.8, 1, 0.8})
+                    obj.setLock(true)
+                    obj.setName("Weapon: " .. source.weapon.name)
+                end
+            })
+
+            table.insert(spawnedAssignmentUI.texts, textObj)
+
+
+            -- build initial assignments
+            assignmentMap[source.signature] = {}
+            assignmentMap[source.signature][source.validTargets[1]] = #source.models
+
+            if #source.validTargets > 1 then
+                for i, targetUUID in ipairs(source.validTargets) do
+                    local targetLabel = targetUUID:sub(1, 6)
+                    local count = assignmentMap[source.signature][targetUUID] or 0
+                    assignmentMap[source.signature][source.validTargets[i]] = assignmentMap[source.signature][source.validTargets[i]] or 0
+                    local btnPos = {
+                        x = origin.x + offsetX + 2 * spacing * dx,
+                        y = origin.y + 1,
+                        z = origin.z + (i + 0.5) * spacing * dz
+                    }
+
+
+                    local rawName = getUnitNameFromUUID(targetUUID) or "Unknown Unit"
+                    local count = assignmentMap[source.signature][targetUUID] or 0
+
+                    -- Auto-wrap name after N characters per line
+
+
+                    local wrappedName = wrapText(rawName, 16)
+                    local numLines = select(2, wrappedName:gsub("\n", "\n")) + 1
+                    local labelText = wrappedName .. "\n[" .. count .. "]"
+
+                    -- Scale font size to fit more lines if needed
+                    local fontSize = 200
+                    if numLines >= 3 then
+                        fontSize = 170
+                    elseif numLines == 2 then
+                        fontSize = 200
+                    end
+
+                    local btnObj = spawnObject({
+                        type = "BlockSquare",
+                        position = btnPos,
+                        scale = {1.4, 0.2, 0.6},
+                        sound = false,
+                        callback_function = function(obj)
+                            obj.setColorTint({0.2, 0.2, 0.2})
+                            obj.setLock(true)
+                            obj.interactable = true
+                            obj.use_gravity = false
+
+                            obj.setVar("sourceSig", source.signature)
+                            obj.setVar("targetUUID", targetUUID)
+
+                            obj.createButton({
+                                label = labelText,
+                                click_function = "assignButtonClick",
+                                function_owner = Global,
+                                position = {0, 0.5, 0},
+                                rotation = {0, 0, 0},
+                                width = 1600,
+                                height = 800,
+                                font_size = fontSize,
+                                color = {0.2, 0.2, 0.2},
+                                font_color = {1, 1, 1}
+                            })
+                        end
+                    })
+
+                    btnObj.setVar("unitName", wrappedName)
+
+                    table.insert(spawnedAssignmentUI.buttons, btnObj)
+                    buttonsByAssignmentKey[source.signature][targetUUID] = btnObj
+                end
+            end
+
+            -- spacing between groups
+            offsetX = offsetX + (5 + 2) * spacing * dx
+        end
+    end
+end
+
+function clearAssignmentUI()
+    -- Destroy all 3DText labels
+    for _, t in ipairs(spawnedAssignmentUI.texts) do
+        if t and t.destroy then t.destroy() end
+    end
+    spawnedAssignmentUI.texts = {}
+
+    -- Destroy all buttons (BlockSquares)
+    for _, b in ipairs(spawnedAssignmentUI.buttons) do
+        if b and b.destroy then b.destroy() end
+    end
+    spawnedAssignmentUI.buttons = {}
+
+    -- Reset state
+    assignmentMap = {}
+    buttonsByAssignmentKey = {}
+    lastBuiltGraph = nil
+end
+
+function getUnitNameFromUUID(uuid)
+    local tagged = getObjectsWithTag("uuid:" .. uuid)
+    if #tagged == 0 then return "Unknown" end
+    local obj = tagged[1]
+
+
+    local script = obj.getLuaScript()
+    local name = extractUnitNameFromScript(script)
+    if name then
+        print("✅ Unit name is: " .. name)
+    else
+        print("⚠️ No unit name found.")
+    end
+
+    if name and name ~= "" then
+        return name
+    end
+
+    -- Try calling buildUI only if needed
+    local ok, err = pcall(function()
+        obj.call("maybeBuildUI")
+    end)
+
+    -- Try again to read the unit name from the UI
+    local updated = obj.UI.getValue("data-unitName")
+    return updated and updated ~= "" and updated or obj.getName():match("^%d+/%d+%s+(.+)$") or obj.getName()
+end
+
+
+function extractUnitNameFromScript(code)
+    local name = code:match('unitName%s*=%s*"([^"]+)"')
+    if name then
+        log("[unitData] Found unitName: " .. name)
+        return name
+    else
+        log("[unitData] Could not find unitName.")
+        return nil
+    end
+end
+
+
+
+function spawnTargetedDice(obj, playerColor, sourceSig, targetUUID)
+    local matGUID = (playerColor == "Red") and redDiceMat_GUID or blueDiceMat_GUID
+    local mat = getObjectFromGUID(matGUID)
+    if not mat then
+        broadcastToColor("❌ Dice mat not found.", playerColor, {1, 0.5, 0.5})
+        return
+    end
+
+    -- Count how many models are assigned to this target
+    local assignedCount = assignmentMap[sourceSig] and assignmentMap[sourceSig][targetUUID] or 0
+    if assignedCount == 0 then
+        broadcastToColor("⚠️ No models assigned to this target.", playerColor, {1, 0.5, 0.5})
+        return
+    end
+
+    -- Look up the weapon stats from lastBuiltGraph
+    local weapon
+    for _, node in ipairs(lastBuiltGraph.sourceNodes or {}) do
+        if node.signature == sourceSig then
+            weapon = node.weapon
+            break
+        end
+    end
+    if not weapon then
+        broadcastToColor("⚠️ Could not find weapon info for: " .. sourceSig, playerColor, {1, 0.4, 0.4})
+        return
+    end
+
+    -- Parse the weapon's attack profile
+    local numDice = weapon.a_n or 1
+    local sides = weapon.a_s or 1
+    local modifier = weapon.a_mod or 0
+
+    local totalDice = 0
+    for i = 1, assignedCount do
+        totalDice = totalDice + rollDice(numDice, sides, modifier, "")
+    end
+
+
+    mat.call("clearAllHelper", playerColor)
+    mat.call("spawnDiceHelper", { n = totalDice, player = playerColor })
+
+    local unitName = getUnitNameFromUUID(targetUUID) or "Target"
+    broadcastToColor(string.format("🎲 Spawning %d dice for %s", totalDice, unitName), playerColor, {0.5, 1, 0.5})
+end
+
+
+
+
+
+function assignButtonClick(obj, playerColor, alt_click)
+    local sourceSig = obj.getVar("sourceSig")
+    local targetUUID = obj.getVar("targetUUID")
+
+
+    if not sourceSig or not targetUUID then
+        broadcastToColor("Missing source or target data on button.", playerColor, {1,0.4,0.4})
+        return
+    end
+
+    if alt_click then
+        
+        log(sourceSig)
+        log(targetUUID)
+        spawnTargetedDice(obj, playerColor, sourceSig, targetUUID)
+        obj.editButton({
+            index = 0,
+            color = {1, 0.2, 0.2}  -- red background
+        })
+
+        local rollHelperObj = getObjectFromGUID(redRollerGUID)
+
+        -- ✅ Use structured weapon data directly
+        for _, node in ipairs(lastBuiltGraph.sourceNodes) do
+            if node.signature == sourceSig then
+                rollHelperObj.call("applyWeaponStats", {
+                    weapon = node.weapon,
+                    target = lastBuiltGraph.targetNodes[targetUUID]
+                })
+                break
+            end
+        end
+    else
+        assignIncrementBtn(obj, playerColor)  -- your existing assign logic
+    end
+end
+
+
+
+
+function assignIncrementBtn(obj, playerColor)
+    local sourceSig = obj.getVar("sourceSig")
+    log(sourceSig)
+    local targetUUID = obj.getVar("targetUUID")
+    log(targetUUID)
+    if not sourceSig or not targetUUID then return end
+
+    local data = assignmentMap[sourceSig]
+    log(data)
+    local maxModels = getMaxModelCountForSource(sourceSig)
+    local currentTotal = getAssignedTotal(data)
+    log(currentTotal)
+
+    if (data[targetUUID] or 0) < maxModels and currentTotal < maxModels then
+        data[targetUUID] = (data[targetUUID] or 0) + 1
+        updateAllAssignmentButtonLabels(sourceSig)
+        return
+    end
+
+    -- Auto-decrement another group
+    for otherUUID, count in pairs(data) do
+        if otherUUID ~= targetUUID and count > 0 then
+            data[otherUUID] = count - 1
+            data[targetUUID] = (data[targetUUID] or 0) + 1
+            updateAllAssignmentButtonLabels(sourceSig)
+            return
+        end
+    end
+
+    broadcastToColor("🚫 No more models to assign.", playerColor, {1, 0.4, 0.4})
+end
+
+
+function updateAllAssignmentButtonLabels(sourceSig)
+    local sourceMap = buttonsByAssignmentKey[sourceSig]
+    if not sourceMap then return end
+
+    local data = assignmentMap[sourceSig]
+    for targetUUID, btn in pairs(sourceMap) do
+        local count = data[targetUUID] or 0
+        local unitName = btn.getVar("unitName")
+        local labelText = unitName .. "\n[" .. count .. "]"
+        btn.editButton({
+            index = 0,
+            label = labelText
+        })
+    end
+end
+
+
+function getAssignedTotal(data)
+    local total = 0
+    log(data)
+    for _, v in pairs(data) do total = total + v end
+    return total
+end
+
+function getMaxModelCountForSource(sourceSig)
+    if not lastBuiltGraph then return 0 end
+    for _, node in ipairs(lastBuiltGraph.sourceNodes) do
+        if node.signature == sourceSig then
+            return #node.models
+        end
+    end
+    return 0
+end
+
+
+
 -- Grid layout for each player
 PLAYER_GRID_SPAWN = {
     Red = {
@@ -284,13 +668,11 @@ function onChat(message, player)
         local fullText = table.concat(descs, "\n---\n")
         printToColor("Full concatenated description block:\n" .. fullText, color, {1, 1, 0.6})
         log("[" .. player.steam_name .. "]: " .. fullText)
-        spawnWeaponDice(color, grouped)
     elseif message == "!attack" then
         local descs = getSelectedDescriptions(color)
         local fullText = table.concat(descs, "\n---\n")
         printToColor("Full concatenated description block:\n" .. fullText, color, {1, 1, 0.6})
         log("[" .. player.steam_name .. "]: " .. fullText)
-        spawnWeaponDice(color, grouped)
     end
     if message:lower() == "!drawlos" then
         drawAllLOSCornerBoxes()
@@ -351,7 +733,7 @@ function buildWeaponAssignmentGraph(sourceUnit, targetUnits)
     local targetNodes = {}
     local targetUUIDToModels = {}
 
-    -- Build targetNodes: group models by unit UUID
+    -- Group models by unit UUID
     for _, targetObj in ipairs(targetUnits) do
         local uuid = getUUIDFromTags(targetObj)
         if uuid then
@@ -361,19 +743,43 @@ function buildWeaponAssignmentGraph(sourceUnit, targetUnits)
     end
 
     for uuid, models in pairs(targetUUIDToModels) do
-        targetNodes[uuid] = { guid = uuid, models = models }
+        local targetData = {
+            guid = uuid,
+            models = models
+        }
+    
+        -- 🔍 Extract toughness from description
+        local desc = models[1].getDescription()
+        targetData.toughness = extractToughnessFromDescription(desc)
+    
+        -- 📜 Extract keywords from script
+        local script = models[1].getLuaScript()
+        local keywordStr = script:match('keywords%s*=%s*"([^"]+)"')
+        if keywordStr then
+            local keywords = {}
+            for word in keywordStr:gmatch("[^,%s]+") do
+                table.insert(keywords, word)
+            end
+            targetData.keywords = keywords
+        else
+            targetData.keywords = {}
+        end
+    
+        targetNodes[uuid] = targetData
     end
+    
 
-    -- Flatten all weapons across source models
+    -- Flatten weapons across source models
     local rawWeapons = {}
     for _, model in ipairs(sourceUnit) do
         local weaponList = parseWeaponsByModel({model})[model] or {}
         for _, weapon in ipairs(weaponList) do
+            log(weapon.abilities)
             table.insert(rawWeapons, { model = model, weapon = weapon })
         end
     end
 
-    -- Group weapons by profile + valid target set
+    -- Group by profile + valid target set
     local weaponGroups = {}
 
     for _, entry in ipairs(rawWeapons) do
@@ -408,15 +814,14 @@ function buildWeaponAssignmentGraph(sourceUnit, targetUnits)
         table.insert(weaponGroups[sig].models, model)
     end
 
-    -- Convert to ordered list
+    -- Convert to list
     local sourceNodes = {}
     for _, group in pairs(weaponGroups) do
         table.insert(sourceNodes, group)
     end
 
-
+    -- Log output
     log("=== Weapon Assignment Graph ===")
-
     for _, node in ipairs(sourceNodes) do
         log(string.format(
             "[SourceNode] %s | Range: %s | Models: %d | Targets: %s",
@@ -426,13 +831,10 @@ function buildWeaponAssignmentGraph(sourceUnit, targetUnits)
             table.concat(node.validTargets, ", ")
         ))
     end
-
     for uuid, tnode in pairs(targetNodes) do
-        log(string.format("[TargetNode] %s | Models: %d", uuid, #tnode.models))
+        log(string.format("[TargetNode] %s | Models: %d | Toughness: %s", uuid, #tnode.models, tostring(tnode.toughness)))
     end
-
     log("===============================")
-
 
     return {
         sourceNodes = sourceNodes,
@@ -443,9 +845,11 @@ end
 
 
 
+
 function parseStatBlock(nameLine, statLine)
     local result = {
         name = nameLine,
+        count = 1,  -- default to 1 weapon
         a_n = 0, a_s = 1, a_mod = 0,
         d_n = 1, d_s = 1, d_mod = 0,
         hit = nil,
@@ -455,6 +859,21 @@ function parseStatBlock(nameLine, statLine)
         abilities = {}
     }
 
+    
+
+    -- Strip any (parenthetical) content and trim whitespace
+    nameLine = nameLine:gsub("%s*%(.-%)", ""):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- Match prefix like "2x Weapon Name" (case-insensitive, optional space)
+    local prefix, rest = nameLine:match("^(%d+)[xX]%s*(.+)")
+    if prefix and rest then
+        result.count = tonumber(prefix)
+        nameLine = rest
+    end
+
+    result.name = nameLine
+
+
     -- Ranged weapon statline: starts with number followed by quote
     if statLine:match("^%d+%s*\"") then
         result.range = tonumber(statLine:match("^(%d+)%s*\""))
@@ -462,18 +881,15 @@ function parseStatBlock(nameLine, statLine)
         return nil
     end
 
-    -- Extract bracketed abilities (exclude hex-looking values)
     for tag in statLine:gmatch("%[(.-)%]") do
         local clean = tag:match("^%s*(.-)%s*$")
-        if not clean:match("^[%x%-]+$") then  -- Exclude pure hex codes
+        if not clean:match("^[%x%-]+$") then
             table.insert(result.abilities, clean)
         end
     end
 
-    -- Check for TORRENT (case-insensitive)
     local containsTorrent = statLine:lower():find("torrent") ~= nil
 
-    -- Extract stat tokens (excluding bracketed)
     for token in statLine:gmatch("[^%s%[%]]+") do
         local key, value = token:match("([A-Z]+):([%-%+%w]+)")
         if key and value then
@@ -491,18 +907,38 @@ function parseStatBlock(nameLine, statLine)
         end
     end
 
-    -- Apply TORRENT rule: set hit = 0
     if containsTorrent then
         result.hit = 0
     end
 
-    -- Only return result if all required stats are present
     if result.a_n > 0 and result.hit ~= nil and result.s ~= nil and result.ap ~= nil and result.d_n > 0 then
         return result
     else
         return nil
     end
 end
+
+
+function extractToughnessFromDescription(desc)
+    -- Find the block with "M   T   Sv ..." then grab the next line
+    local lines = {}
+    for line in desc:gmatch("[^\r\n]+") do
+        table.insert(lines, line)
+    end
+
+    for i, line in ipairs(lines) do
+        if line:find("M%s+T%s+Sv") and lines[i + 1] then
+            local values = {}
+            for token in lines[i + 1]:gmatch("%S+") do
+                table.insert(values, token)
+            end
+            local tVal = tonumber(values[2])  -- second column is Toughness
+            return tVal
+        end
+    end
+    return nil
+end
+
 
 
 
@@ -526,6 +962,7 @@ function parseWeaponsByModel(objects)
     for _, obj in ipairs(objects) do
         local desc = obj.getDescription()
         local lines = {}
+
         for line in string.gmatch(desc, "[^\r\n]+") do
             -- Remove bracketed hex/ID values, but preserve gameplay tags
             line = line:gsub("%[(%s*[%x%-]+%s*)%]", "")
@@ -541,18 +978,26 @@ function parseWeaponsByModel(objects)
 
             if parsed then
                 result[obj] = result[obj] or {}
-                parsed.range = parsed.range or nil  -- fallback handled in stat block
+                parsed.range = parsed.range or nil
                 parsed.abilities = table.concat(parsed.abilities, ", ")
-                table.insert(result[obj], parsed)
-                i = i + 2  -- skip the next line (already consumed)
+
+                for _ = 1, parsed.count or 1 do
+                    local copy = {}
+                    for k, v in pairs(parsed) do copy[k] = v end
+                    copy.count = nil -- optional, since it's now unrolled
+                    table.insert(result[obj], copy)
+                end
+
+                i = i + 2
             else
-                i = i + 1  -- not a weapon, keep scanning
+                i = i + 1
             end
         end
     end
 
     return result
 end
+
 
 function formatWeaponLabel(weapon)
     -- Format A (attacks)
@@ -601,166 +1046,6 @@ function groupWeaponsByModel(weaponsByModel, hitKey)
 
     return groups
 end
-
-
-
-function wrapText(text, maxLen)
-    local wrappedLines = {}
-
-    for rawLine in text:gmatch("[^\n]+") do
-        local count = 0
-        local line = ""
-
-        for word in rawLine:gmatch("%S+") do
-            if count + #word > maxLen then
-                table.insert(wrappedLines, line)
-                line = word
-                count = #word
-            else
-                if count > 0 then
-                    line = line .. " "
-                    count = count + 1
-                end
-                line = line .. word
-                count = count + #word
-            end
-        end
-
-        table.insert(wrappedLines, line)
-    end
-
-    return table.concat(wrappedLines, "\n")
-end
-
-
-
-function spawnWeaponDice(playerColor, grouped)
-    clearSpawnedDiceObjects()
-    local grid = PLAYER_GRID_SPAWN[playerColor]
-    if not grid then
-        printToAll("No grid defined for color: " .. playerColor, {1, 0, 0})
-        return
-    end
-
-    local origin = grid.origin
-    local dx = grid.xDir
-    local dz = grid.zDir
-
-    local rowSize = 5
-    local spacing = 1.8
-    local groupOffsetX = 0
-
-    local groupList = {}
-    for _, group in pairs(grouped) do
-        table.insert(groupList, group)
-    end
-
-    table.sort(groupList, function(a, b)
-        return a.label < b.label
-    end)
-
-    for _, group in ipairs(groupList) do
-        local groupColor = group.color or stringColorToRGB(playerColor)
-        local attackExpr = group.label:match("A:([%dDd]+)")
-        local numDice, sides = parseDiceExpression(attackExpr or "0")
-        local avgAttacksPerModel = numDice * ((sides + 1) / 2)
-        local totalDice = math.ceil(group.count * avgAttacksPerModel)
-        local numRows = math.ceil(totalDice / rowSize)
-        local groupDice = {}
-
-        printToColor(string.format("Spawning group: %s | Models: %d | Dice: %d", group.label, group.count, totalDice), playerColor, {0.6, 1, 0.6})
-
-        -- Weapon label = row 0
-        local labelPos = {
-            x = origin.x + groupOffsetX + 2 * spacing * dx,
-            y = origin.y + 4,
-            z = origin.z + 0 * spacing * dz,
-        }
-
-        local myLabelText = wrapText(group.label, 30)
-
-        local diceText = spawnObject({
-            type = "3DText",
-            position = labelPos,
-            rotation = {
-                0,
-                (playerColor == "Red") and 180 or 0,
-                0
-            },
-            scale = {0.8, 0.8, 0.8},
-            sound = false,
-            callback_function = function(obj)
-                obj.TextTool.setValue(myLabelText)
-                obj.TextTool.setFontColor(groupColor)
-            end
-        })
-        table.insert(spawnedDiceObjects, diceText)
-
-        -- Dice start at row 1
-        for i = 0, totalDice - 1 do
-            local row = math.floor(i / rowSize) + 1
-            local col = i % rowSize
-            local pos = {
-                x = origin.x + groupOffsetX + col * spacing * dx,
-                y = origin.y + 2,
-                z = origin.z + row * spacing * dz,
-            }
-            local die = spawnObject({
-                type = "Die_6_Rounded",
-                position = pos,
-                rotation = {0, math.random() * 360, 0},
-                callback_function = function(obj)
-                    obj.setColorTint(groupColor)
-                end
-            })
-            table.insert(groupDice, die)
-        end
-
-        local rowForButton = math.max(numRows + 1, 6)
-        local buttonPos = {
-            x = origin.x + groupOffsetX + 2 * spacing * dx,
-            y = origin.y - 0.3,
-            z = origin.z + (rowForButton) * spacing * dz,
-        }
-
-        local btn = spawnObject({
-            type = "BlockSquare",
-            position = buttonPos,
-            scale = {1.8, 0.1, 1},
-            sound = false,
-            callback_function = function(obj)
-                obj.setColorTint({0.2, 0.2, 0.2})
-                obj.setLock(true)
-                obj.interactable = true
-                obj.use_gravity = false
-
-                obj.createButton({
-                    label = "Load Roll",
-                    click_function = "onLoadRollClicked",
-                    function_owner = Global,
-                    position = {0, 0.5, 0},
-                    rotation = {0, 0, 0},
-                    width = 1600,
-                    height = 600,
-                    font_size = 200,
-                    color = {0.1, 0.1, 0.1},
-                    font_color = {1, 1, 1}
-                })
-
-                diceGroupsByButtonGUID[obj.getGUID()] = groupDice
-                diceDescriptionByButtonGUID[obj.getGUID()] = group.label
-            end
-        })
-
-        table.insert(spawnedDiceObjects, btn)
-        table.insert(diceGroupButtons, btn)
-
-        -- Uniform lateral spacing for next group
-        local groupSpacing = (rowSize + 2) * spacing
-        groupOffsetX = groupOffsetX + groupSpacing * dx
-    end
-end
-
 
 
 function resetTargetingState()
@@ -825,7 +1110,7 @@ end
 
 
 -- Roll the dice expression
-function rollDice(numDice, sides, label)
+function rollDice(numDice, sides, modifier, label)
     local total = 0
     local rolls = {}
 
@@ -836,8 +1121,10 @@ function rollDice(numDice, sides, label)
     end
 
     local rollStr = table.concat(rolls, ", ")
-    broadcastToAll("• Rolled " .. label .. ": [" .. rollStr .. "] = " .. total, {0.8, 1, 0.8})
-    return total
+    if sides > 1 then
+        broadcastToAll("• Rolled " .. label .. ": [" .. rollStr .. "] = " .. total, {0.8, 1, 0.8})
+    end
+    return total + modifier
 end
 
 
@@ -886,8 +1173,8 @@ function onLoadRollClicked(obj, playerColor)
 
     -- Step 3: Parse A:# / A:d# / A:#d# format
     local diceExpr = labelText:match("A:([^%s]+)")
-    local numDice, sides = parseDiceExpression((diceExpr or "1"))
-    local totalAttacks = rollDice(numDice, sides, diceExpr)
+    local numDice, sides, modifier = parseDiceExpression((diceExpr or "1"))
+    local totalAttacks = rollDice(numDice, sides, modifier, diceExpr)
 
     -- Step 4: Spawn dice with inherited color
     local spawned = {}
@@ -1412,7 +1699,6 @@ function previewTargeting(playerColor)
     end
 
     Global.setVectorLines(allVectorLines)
-    spawnWeaponDice(playerColor, groupedByLabel)
     targetingState.confirmed = true
     targetingState.previewing = true
     broadcastToColor("Previewing targeting: press 7 to add/remove source models, or 8 to confirm or clear.", playerColor, {1,1,0})
@@ -1464,6 +1750,7 @@ function onScriptingButtonDown(index, playerColor)
                 local graph = buildWeaponAssignmentGraph(targetingState.sourceUnit, allTargetModels)
                 -- Optional: store or visualize it here
                 visualizeWeaponAssignmentGraph(graph, {x=0, y=3, z=0})
+                spawnAssignmentUIAligned(playerColor, graph)
                 targetingState.confirmed = true
                 return
             else
@@ -1586,6 +1873,8 @@ function onObjectSpawn(obj)
         if not script or #script < 50 then
             return
         end
+
+        
 
         -- Attempt to extract unitData block from the object's script
         local unitData = extractUnitDataFromScript(script)

@@ -10,6 +10,7 @@ handlersInitialized = false
 
 -- Updated tracked vars
 local inputVars = {
+    "a_n", "a_s", "a_mod", "reroll_threshold",
     "bs", "s", "ap", "d", "hit_mod",
     "sustained_hits", "crit_hit", "wound_mod",
     "anti_val",  -- was anti_vehicle, anti_monster, anti_infantry
@@ -17,9 +18,30 @@ local inputVars = {
 }
 
 local toggleVars = {
-    "lethal_hits", "reroll_all", "reroll_1s",
-    "devastating_wounds",
+    "blast", "reroll_nattacks",
+    "lethal_hits", "reroll_hits", "reroll_hit_1", 
+    "devastating_wounds","reroll_wounds", "reroll_wound_1",
     "anti_active"  -- new toggle for whether target has matching keyword
+}
+
+defaultInputs = {
+    a_n = "1", a_s = "1", a_mod = "0", reroll_threshold = "3",
+    bs = "", s = "", ap = "", d = "",
+    hit_mod = "0", sustained_hits = "0", crit_hit = "6",
+    wound_mod = "0", anti_val = "",
+    t = ""
+}
+
+defaultToggles = {
+    blast = false,
+    reroll_nattacks = false,
+    lethal_hits = false,
+    reroll_hit_1 = false,
+    reroll_hits = false,
+    anti_active = false,
+    devastating_wounds = false,
+    reroll_wound_1 = false,
+    reroll_wounds = false
 }
 
 local function extractStatBlock(stats)
@@ -52,8 +74,101 @@ local function extractStatBlock(stats)
 end
 
 
+function applyWeaponStats(params)
+    local weapon = params.weapon
+    local target = params.target
+
+
+    -- Reset all inputs to default values
+    for var, def in pairs(defaultInputs) do
+        if inputIndices[var] then
+            updateInput(var, def)
+        end
+    end
+
+    -- Reset all toggles to false
+    for var, def in pairs(defaultToggles) do
+        updateToggle(var, def)
+    end
+
+    -- Base stats
+    if weapon.a_n and inputIndices["a_n"] then updateInput("a_n", tostring(weapon.a_n)) end
+    if weapon.a_s and inputIndices["a_s"] then updateInput("a_s", tostring(weapon.a_s)) end
+    if weapon.a_mod and inputIndices["a_mod"] then updateInput("a_mod", tostring(weapon.a_mod)) end
+    if weapon.hit and inputIndices["bs"] then updateInput("bs", tostring(weapon.hit)) end
+    if weapon.s and inputIndices["s"] then updateInput("s", tostring(weapon.s)) end
+    if weapon.ap and inputIndices["ap"] then updateInput("ap", tostring(weapon.ap)) end
+    if weapon.d_n and inputIndices["d"] then updateInput("d", tostring(weapon.d_n)) end
+
+
+
+    if target and target.toughness and inputIndices["t"] then
+        updateInput("t", tostring(target.toughness))
+    end
+    
+
+    log(weapon)
+
+    -- Optional ability flags
+    local abilities = weapon.abilities:lower()  
+    local sustainedVal = abilities:match("sustained hits%s*(%d+)")
+    if sustainedVal then
+        updateInput("sustained_hits", sustainedVal)
+    end
+
+
+    if abilities:find("devastating wounds") then
+        updateToggle("devastating_wounds", true)
+    end
+
+
+    -- Match Anti abilities like: "Anti-Infantry 2+", "Anti-Monster 4+", etc.
+    local antiKeyword, antiVal = abilities:match("anti%-(%a+)%s+(%d+%+)")
+    if antiKeyword and antiVal then
+        -- Check if the target has the relevant keyword
+        if target and target.keywords then
+            for _, kw in ipairs(target.keywords) do
+                if kw:lower() == antiKeyword:lower() then
+                    updateInput("anti_val", antiVal)
+                    updateToggle("anti_active", true)
+                    break
+                end
+            end
+        end
+    end
+
+
+    if abilities:find("lethal") then
+        updateToggle("lethal_hits", true)
+    end
+
+    if abilities:find("twin-linked") then
+        updateToggle("reroll_wounds", true)
+    end
+
+    if abilities:find("blast") then
+        updateToggle("blast", true)
+    end
+    
+end
+
+
 function applyWeaponLabel(labelText)
     local stats = extractStatBlock(labelText)
+
+
+    -- 🔄 Reset all inputs to their default values
+    for var, def in pairs(defaultInputs) do
+        if inputIndices[var] then
+            updateInput(var, def)
+        end
+    end
+
+    -- 🔄 Reset all toggles to false
+    for var, def in pairs(defaultToggles) do
+        updateToggle(var, def)
+    end
+
 
     -- Apply base stats only if tracked
     if stats.hit and inputVars["bs"] then updateInput("bs", stats.hit:gsub("%D", "")) end
@@ -113,13 +228,27 @@ function updateInput(var, val)
 end
 
 
+function updateToggle(var, val)
+    log("update input")
+    log(var)
+    log(val)
+
+    local index = toggleButtonIndices[var]
+    if index then
+        log("✏️ Editing input at index: " .. tostring(index) .. " with value: " .. tostring(val))
+        self.editInput({index = index, value = val})
+        inputStates[var] = val
+    end
+end
+
+
 
 -- Final Action
 function onRollPressed(obj, color)
     print(color .. " pressed ROLL!")
     print("Inputs:")
     for _, v in ipairs(inputVars) do
-        print(v .. " = " .. tostring(_G[v]))
+        print(v .. " = " .. tostring(inputStates[v]))
     end
     print("Toggles:")
     for k, v in pairs(toggleStates) do
@@ -168,9 +297,6 @@ end
 
 
 
-
-
--- TOGGLE GENERATORS
 function makeToggleHandler(varName)
     _G["toggle_" .. varName] = function(obj, color)
         toggleStates[varName] = not toggleStates[varName]
@@ -190,6 +316,21 @@ function makeToggleHandler(varName)
     end
 end
 
+-- TOGGLE GENERATORS
+-- Clean version
+function updateToggle(var, val)
+    toggleStates[var] = val
+
+    local index = toggleButtonIndices[var]
+    if index then
+        self.editButton({
+            index = index,
+            color = val and {0.2, 0.6, 0.4} or {0.2, 0.2, 0.2},
+            font_color = {0.4, 0.8, 1.0}
+        })
+    end
+end
+
 
 -- Enhanced physical UI layout for Warhammer Dice Calculator
 toggleStates = {}
@@ -199,12 +340,12 @@ function addFullPhysicalUI(obj)
     obj.clearButtons()
     obj.clearInputs()
 
-    local y = 1.0
+    local y = 2.0
     local dy = 1.5
     local xSpacing = 1.9
     local sectionLabelX = -6
 
-    local function input(label, varName, x, z)
+    local function input(label, varName, defaultValue, x, z)
         obj.createButton({
             label = label, click_function = "do_nothing", function_owner = self,
             position = {x, 0.3, z + zOffset + 0.5}, width = 0, height = 0,
@@ -212,10 +353,10 @@ function addFullPhysicalUI(obj)
         })
     
         local index = obj.getInputs() and #obj.getInputs() or 0
-    
+        
         obj.createInput({
             input_function = "handleInput_" .. varName, function_owner = self,
-            label = "", alignment = 3, tooltip = label,
+            label = defaultValue, value = defaultValue, alignment = 3, tooltip = label,
             position = {x, 0.3, z + zOffset}, rotation = {0, 0, 0},
             width = 800, height = 180, font_size = 120
         })
@@ -261,7 +402,7 @@ function addFullPhysicalUI(obj)
         })
 
         for i, field in ipairs(fields) do
-            input(field.label, field.var, xSpacing * (i - 2.8), y)
+            input(field.label, field.var, field.defaultValue, xSpacing * (i - 2.8), y)
         end
 
         if toggles then
@@ -273,6 +414,17 @@ function addFullPhysicalUI(obj)
         y = y - dy
     end
 
+
+    row("# Of Attacks", {
+        {label = "# Dice", var = "a_n", defaultValue = "1"},
+        {label = "# Sides", var = "a_s", defaultValue = "1"},
+        {label = "Attack Mod", var = "a_mod", defaultValue = "0"},
+        {label = "Reroll Threshold", var = "reroll_threshold", defaultValue = "3"}
+    }, {
+        {label = "Blast", var = "blast"},
+        {label = "Reroll", var = "reroll_nattacks"}
+    })
+
     -- Build each row with section label on the left
     row("Attack Stats", {
         {label = "BS/WS", var = "bs"},
@@ -282,26 +434,29 @@ function addFullPhysicalUI(obj)
     })
 
     row("Hit Phase", {
-        {label = "Hit Mod", var = "hit_mod"},
-        {label = "Sustained", var = "sustained_hits"},
-        {label = "Crit Hit", var = "crit_hit"}
+        {label = "Hit Mod", var = "hit_mod", defaultValue = "0"},
+        {label = "Sustained", var = "sustained_hits", defaultValue = "0"},
+        {label = "Crit On", var = "crit_hit", defaultValue = "6"}
     }, {
         {label = "Lethal Hits", var = "lethal_hits"},
-        {label = "Reroll All", var = "reroll_all"},
-        {label = "Reroll 1s", var = "reroll_1s"}
+        {label = "Reroll 1s", var = "reroll_hit_1"},
+        {label = "Reroll All", var = "reroll_hits"}
+        
     })
 
     row("Wound Phase", {
-        {label = "Wound Mod", var = "wound_mod"},
-        {label = "Anti-X", var = "anti_val"}
+        {label = "Wound Mod", var = "wound_mod", defaultValue = "0"},
+        {label = "Anti-X", var = "anti_val", defaultValue = ""}
     }, {
         {label = "Anti Active", var = "anti_active"},
-        {label = "Devastating", var = "devastating_wounds"}
+        {label = "Devastating", var = "devastating_wounds"},
+        {label = "Reroll 1s", var = "reroll_wound_1"},
+        {label = "Reroll All", var = "reroll_wounds"}
     })
     
 
     row("Defense", {
-        {label = "Tough", var = "t"}
+        {label = "Tough", var = "t", defaultValue = ""}
     })
 
     obj.createButton({
